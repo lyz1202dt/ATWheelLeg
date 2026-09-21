@@ -13,10 +13,4 @@
     <description>MuJoCo middle-layer chain controller with PD motor target interfaces.</description>
   </class>
 
-  <class
-    name="lqr_controller/RealHardware"
-    type="lqr_controller::RealHardware"
-    base_class_type="hardware_interface::SystemInterface">
-    <description>Real hardware interface skeleton for motor state and target interfaces.</description>
-  </class>
 </library>

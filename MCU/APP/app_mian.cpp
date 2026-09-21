@@ -28,12 +28,11 @@ Motor* rf_motor = nullptr;
 Motor* rb_motor = nullptr;
 Motor* lw_motor = nullptr;
 Motor* rw_motor = nullptr;
-IMUBase* imu = &bmi088_imu;
+IMUBase* imu    = &bmi088_imu;
 Controller controller_instance{imu, lf_motor, rf_motor, lb_motor, rb_motor, lw_motor, rw_motor};
 Controller* controller = &controller_instance;
 
-void app_main(void)
-{
+void app_main(void) {
     if (bsp::hardware::init() != HAL_OK) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         return;
@@ -49,56 +48,54 @@ void app_main(void)
     (void)xTaskCreate(TestTask, "test_task", 512, nullptr, 1, &test_task_handle);
 
     for (;;) {
+        
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
-void TestTask(void* param)
-{
+void TestTask(void* param) {
     (void)param;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
-void IMUTask(void* param)
-{
+void IMUTask(void* param) {
     (void)param;
-    Eigen::Quaternionf q = Eigen::Quaternionf::Identity();
-    Eigen::Vector3d angular = Eigen::Vector3d::Zero();
+    Eigen::Quaternionf q         = Eigen::Quaternionf::Identity();
+    Eigen::Vector3d angular      = Eigen::Vector3d::Zero();
     Eigen::Vector3d acceleration = Eigen::Vector3d::Zero();
+    TickType_t last_wake_time = xTaskGetTickCount();
     for (;;) {
         (void)imu->update(q, angular, acceleration, 0.001F);
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(1));
     }
 }
 
-void MotorTask(void* param)
-{
+void MotorTask(void* param) {
     (void)param;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
-void ControlTask(void* param)
-{
+void ControlTask(void* param) {
     (void)param;
+    controller->imu = imu;
+    controller->lf  = lf_motor;
+    controller->rf  = rf_motor;
+    controller->lb  = lb_motor;
+    controller->rb  = rb_motor;
+    controller->lw  = lw_motor;
+    controller->rw  = rw_motor;
+    TickType_t last_wake_time = xTaskGetTickCount();
     for (;;) {
-        controller->imu = imu;
-        controller->lf = lf_motor;
-        controller->rf = rf_motor;
-        controller->lb = lb_motor;
-        controller->rb = rb_motor;
-        controller->lw = lw_motor;
-        controller->rw = rw_motor;
-        (void)controller->update(0.001F);
-        vTaskDelay(pdMS_TO_TICKS(1));
+        (void)controller->update(0.002f);
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(2));
     }
 }
 
-void LqrTask(void* param)
-{
+void LqrTask(void* param) {
     (void)param;
     uint32_t consumed_request = 0U;
 
@@ -115,8 +112,7 @@ void LqrTask(void* param)
             }
 
             Eigen::Matrix<double, 2, 6> gain;
-            if (controller->calculate_lqr_gain(q_diag, r_diag, gain) &&
-                controller->set_K(gain)) {
+            if (controller->calculate_lqr_gain(q_diag, r_diag, gain) && controller->set_K(gain)) {
                 consumed_request = request;
             }
         }

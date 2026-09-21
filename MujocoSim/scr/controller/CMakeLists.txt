@@ -20,10 +20,23 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(robot_interfaces REQUIRED)
 find_package(urdf REQUIRED)
-find_package(Eigen3 REQUIRED PATHS /usr/include/eigen3)
-find_package(autodiff REQUIRED)
+find_package(Eigen3 REQUIRED)
+
+set(CORE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../Core)
+if(NOT EXISTS ${CORE_SOURCE_DIR}/src/controller.cpp)
+  message(FATAL_ERROR "Core controller sources were not found at ${CORE_SOURCE_DIR}")
+endif()
+
+# Use the copy vendored in this workspace instead of an installed autodiff
+# package, which may leave a stale or incomplete CMake package behind.
+if(NOT TARGET autodiff::autodiff)
+  add_subdirectory(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/autodiff
+    ${CMAKE_CURRENT_BINARY_DIR}/autodiff
+    EXCLUDE_FROM_ALL
+  )
+endif()
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -38,24 +51,19 @@ if(BUILD_TESTING)
 endif()
 
 pluginlib_export_plugin_description_file(controller_interface plugin.xml)
-pluginlib_export_plugin_description_file(controller_interface mpc_controller_plugin.xml)
 pluginlib_export_plugin_description_file(hardware_interface plugin.xml)
-
-add_subdirectory(
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/TinyMPC/src/tinympc
-  ${CMAKE_CURRENT_BINARY_DIR}/tinympc
-)
 
 add_library(lqr_controller SHARED
   src/controller/controller.cpp
   src/controller/mujoco_sim.cpp
-  src/controller/real_hardware.cpp
-  src/tools/leg_calc.cpp
+  src/controller/vir_imu.cpp
+  src/controller/vir_motor.cpp
+  ${CORE_SOURCE_DIR}/src/controller.cpp
+  ${CORE_SOURCE_DIR}/src/tools/leg_calc.cpp
 )
 
-add_library(mpc_controller SHARED
-  src/controller/mpc_controller.cpp
-  src/tools/leg_calc.cpp
+target_include_directories(lqr_controller PRIVATE
+  ${CORE_SOURCE_DIR}/inc
 )
 
 set(controller_common_dependencies
@@ -66,37 +74,35 @@ set(controller_common_dependencies
   rclcpp_lifecycle
   geometry_msgs
   sensor_msgs
-  robot_interfaces
   urdf
 )
 
-foreach(controller_target lqr_controller mpc_controller)
-  target_include_directories(${controller_target} PUBLIC
-    ${EIGEN3_INCLUDE_DIRS}
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-  )
+target_include_directories(lqr_controller PUBLIC
+  ${EIGEN3_INCLUDE_DIRS}
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
 
-  target_link_libraries(${controller_target} Eigen3::Eigen autodiff::autodiff)
+target_link_libraries(lqr_controller Eigen3::Eigen autodiff::autodiff)
 
-  ament_target_dependencies(
-    ${controller_target}
-    ${controller_common_dependencies}
-  )
-endforeach()
+ament_target_dependencies(
+  lqr_controller
+  ${controller_common_dependencies}
+)
 
-target_link_libraries(mpc_controller tinympcstatic)
-
-install(TARGETS lqr_controller mpc_controller
+install(TARGETS lqr_controller
   LIBRARY DESTINATION lib
 )
 
 install(
-  FILES plugin.xml mpc_controller_plugin.xml
+  FILES plugin.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
 install(DIRECTORY include/
+DESTINATION include)
+
+install(DIRECTORY ${CORE_SOURCE_DIR}/inc/
 DESTINATION include)
 
 install(

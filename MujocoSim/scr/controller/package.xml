@@ -16,9 +16,7 @@
   <depend>rclcpp_lifecycle</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>robot_interfaces</depend>
   <depend>urdf</depend>
-  <depend>autodiff</depend>
 
   <exec_depend>car</exec_depend>
   <exec_depend>mujoco_ros2_control</exec_depend>
