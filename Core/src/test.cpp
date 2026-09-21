@@ -1,7 +1,7 @@
 #include <iostream>
 
 #include "controller.hpp"
-#include "tools/leg_calc.hpp"
+#include "leg_calc.hpp"
 
 int main()
 {
@@ -21,18 +21,9 @@ int main()
 
     Controller controller(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
     std::string error;
-    if (!controller.set_gain_table(
-            {0.20, 0.28, 0.34},
-            {
-                -0.2175, -1.0147, -8.1376, -2.5916, 6.9973, 1.8424,
-                0.0778, 0.3826, 6.1639, 2.3130, 24.8878, 6.6832,
-                -0.2247, -1.0360, -8.8680, -2.8228, 6.1353, 1.6259,
-                0.0683, 0.3305, 5.7885, 2.0287, 26.0139, 6.9852,
-                -0.2247, -1.0360, -8.8680, -2.8228, 6.1353, 1.6259,
-                0.0683, 0.3305, 5.7885, 2.0287, 26.0139, 6.9852,
-            },
-            error)) {
-        std::cerr << "LQR gain table validation failed: " << error << '\n';
+    if (!controller.update_lqr_gain(
+            {1.0, 1.0, 10.0, 1.0, 1.0, 1.0}, {1.0, 1.0}, error)) {
+        std::cerr << "LQR gain update failed: " << error << '\n';
         return 1;
     }
 

@@ -8,11 +8,23 @@
 #include <FreeRTOS.h>
 #include <task.h>
 
+#include <array>
+#include <cstdint>
+#include <string>
+
 TaskHandle_t imu_task_handle;
 TaskHandle_t motor_task_handle;
 TaskHandle_t control_task_handle;
 TaskHandle_t lqr_task_handle;
 TaskHandle_t test_task_handle;
+
+extern "C" {
+// These variables are intentionally global so a debugger can edit the weights
+// and increment lqr_gain_update_request to apply them once.
+volatile uint32_t lqr_gain_update_request = 0U;
+volatile float lqr_q_diag[6] = {10.0, 400.0, 100.0, 40.0, 600.0, 50.0};
+volatile float lqr_r_diag[2] = {8.0, 0.5};
+}
 
 void TestTask(void* param);
 void IMUTask(void* param);
@@ -103,19 +115,18 @@ void LqrTask(void* param) {
     for (;;) {
         const uint32_t request = lqr_gain_update_request;
         if (controller != nullptr && request != consumed_request) {
-            float q_diag[6] = {};
-            float r_diag[2] = {};
+            std::array<double, 6> q_diag{};
+            std::array<double, 2> r_diag{};
             for (uint32_t index = 0U; index < 6U; ++index) {
-                q_diag[index] = lqr_q_diag[index];
+                q_diag[index] = static_cast<double>(lqr_q_diag[index]);
             }
             for (uint32_t index = 0U; index < 2U; ++index) {
-                r_diag[index] = lqr_r_diag[index];
+                r_diag[index] = static_cast<double>(lqr_r_diag[index]);
             }
 
-            Eigen::Matrix<double, 2, 6> gain;
-            if (controller->calculate_lqr_gain(q_diag, r_diag, gain) && controller->set_K(gain)) {
-                consumed_request = request;
-            }
+            std::string error;
+            (void)controller->update_lqr_gain(q_diag, r_diag, error);
+            consumed_request = request;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }

@@ -54,6 +54,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(core
     src/controller.cpp
+    src/lqr_gain_debuger.cpp
     src/lqr_gain_scheduler.cpp
     src/leg_calc.cpp
 )

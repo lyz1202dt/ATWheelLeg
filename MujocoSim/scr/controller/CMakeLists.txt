@@ -14,6 +14,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(controller_interface REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
@@ -59,6 +60,7 @@ add_library(lqr_controller SHARED
   src/controller/vir_imu.cpp
   src/controller/vir_motor.cpp
   ${CORE_SOURCE_DIR}/src/controller.cpp
+  ${CORE_SOURCE_DIR}/src/lqr_gain_debuger.cpp
   ${CORE_SOURCE_DIR}/src/lqr_gain_scheduler.cpp
   ${CORE_SOURCE_DIR}/src/leg_calc.cpp
 )
@@ -69,6 +71,7 @@ target_include_directories(lqr_controller PRIVATE
 
 set(controller_common_dependencies
   rclcpp
+  rcl_interfaces
   controller_interface
   pluginlib
   hardware_interface

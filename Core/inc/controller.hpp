@@ -1,15 +1,15 @@
 #pragma once
 
 #include "imubase.hpp"
-#include "lqr_gain_scheduler.hpp"
+#include "lqr_gain_debuger.hpp"
 #include "motorbase.hpp"
 #include "leg_calc.hpp"
 
 #include <Eigen/Dense>
 
+#include <array>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 class Controller {
 public:
@@ -41,9 +41,9 @@ public:
     void input(float velocity, float omega, float height = 0.21f, int mode = 0);
 
     bool set_params(const Params& params);
-    bool set_gain_table(const std::vector<double>& lengths,
-                        const std::vector<double>& values,
-                        std::string& error);
+    bool update_lqr_gain(const LqrGainDebuger::StateWeight& q_diag,
+                         const LqrGainDebuger::InputWeight& r_diag,
+                         std::string& error);
 
     State state() const { return state_; }
     Eigen::Vector2d lqr_control() const;
@@ -94,7 +94,11 @@ private:
                               double dt);
 
     LegCalc leg_;
-    LqrGainScheduler gain_scheduler_;
+    LqrGainDebuger gain_debuger_;
+    LqrGainDebuger::GainMatrix ground_k_mat_ =
+        LqrGainDebuger::GainMatrix::Zero();
+    LqrGainDebuger::GainMatrix air_k_mat_ =
+        LqrGainDebuger::GainMatrix::Zero();
     Params params_;
     State state_ = State::Recovery;
     int requested_mode_ = 0;

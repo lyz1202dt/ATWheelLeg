@@ -9,6 +9,8 @@
 
 #include <array>
 #include <atomic>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
+#include <rclcpp/node_interfaces/node_parameters_interface.hpp>
 #include <string>
 #include <vector>
 
@@ -45,9 +47,11 @@ private:
     static constexpr size_t kStateInterfacesPerMotor = 3;
 
     bool bind_motor_interfaces();
-    bool configure_controller();
+    bool configure_controller(std::string& error);
     bool read_motor_states();
     void cmd_vel_callback(const geometry_msgs::msg::Twist& msg);
+    rcl_interfaces::msg::SetParametersResult on_set_parameters(
+        const std::vector<rclcpp::Parameter>& parameters);
 
     VirIMU imu_;
     VirMotor lf_motor_;
@@ -77,8 +81,11 @@ private:
     std::string imu_pose_topic_{"/imu_pose_sensor/pose"};
     std::string cmd_vel_topic_{"/cmd_vel"};
     Controller::Params controller_params_{};
-    std::vector<double> gain_lengths_;
-    std::vector<double> gain_values_;
+    LqrGainDebuger::StateWeight q_diag_ = {
+        1.0, 1.0, 10.0, 1.0, 1.0, 1.0};
+    LqrGainDebuger::InputWeight r_diag_ = {1.0, 1.0};
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
+        parameter_callback_handle_;
 };
 
 }  // namespace lqr_controller
