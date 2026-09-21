@@ -60,7 +60,7 @@ add_library(lqr_controller SHARED
   src/controller/vir_motor.cpp
   ${CORE_SOURCE_DIR}/src/controller.cpp
   ${CORE_SOURCE_DIR}/src/lqr_gain_scheduler.cpp
-  ${CORE_SOURCE_DIR}/src/tools/leg_calc.cpp
+  ${CORE_SOURCE_DIR}/src/leg_calc.cpp
 )
 
 target_include_directories(lqr_controller PRIVATE

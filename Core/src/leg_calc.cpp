@@ -1,4 +1,4 @@
-#include "tools/leg_calc.hpp"
+#include "leg_calc.hpp"
 
 #include <Eigen/LU>
 

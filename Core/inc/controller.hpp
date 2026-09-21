@@ -3,7 +3,7 @@
 #include "imubase.hpp"
 #include "lqr_gain_scheduler.hpp"
 #include "motorbase.hpp"
-#include "tools/leg_calc.hpp"
+#include "leg_calc.hpp"
 
 #include <Eigen/Dense>
 
