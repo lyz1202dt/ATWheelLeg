@@ -22,8 +22,8 @@ extern "C" {
 // These variables are intentionally global so a debugger can edit the weights
 // and increment lqr_gain_update_request to apply them once.
 volatile uint32_t lqr_gain_update_request = 0U;
-volatile float lqr_q_diag[6] = {10.0, 400.0, 100.0, 40.0, 600.0, 50.0};
-volatile float lqr_r_diag[2] = {8.0, 0.5};
+volatile float lqr_q_diag[6] = {0.3, 3.0, 100.0, 40.0, 600.0, 50.0};
+volatile float lqr_r_diag[2] = {4.0, 0.5};
 }
 
 void TestTask(void* param);
