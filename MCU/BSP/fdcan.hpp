@@ -47,10 +47,8 @@ public:
                                uint32_t fd_format = FDCAN_CLASSIC_CAN,
                                uint32_t bitrate_switch = FDCAN_BRS_OFF,
                                std::function<void(void *)> cplt_cb = nullptr) const;
-    HAL_StatusTypeDef register_recv_cb(std::function<void(void *)> recv_cb,
+    HAL_StatusTypeDef register_recv_cb(std::function<void(const Frame& frame)> recv_cb,
                                        uint32_t rx_location = FDCAN_RX_FIFO0) const;
-    HAL_StatusTypeDef receive(Frame &frame, uint32_t rx_location = FDCAN_RX_FIFO0) const;
-
     static uint32_t lengthToDlc(uint8_t length);
     static uint8_t dlcToLength(uint32_t dlc);
 

@@ -1,6 +1,7 @@
 #include "fdcan.hpp"
 
 #include <utility>
+#include <vector>
 
 namespace bsp {
 
@@ -12,8 +13,7 @@ struct TxTransfer {
 };
 
 struct CallbackState {
-    std::function<void(void *)> receive_callback;
-    uint32_t receive_location = FDCAN_RX_FIFO0;
+    std::unordered_map<uint32_t, std::vector<std::function<void(const FdcanBus::Frame &)>>> receive_callbacks;
 
     bool pending_tx = false;
     TxTransfer pending_transfer = {};
@@ -37,20 +37,53 @@ void clearPendingTransfer(CallbackState &state)
     state.pending_transfer = {};
 }
 
+HAL_StatusTypeDef receiveFrame(FDCAN_HandleTypeDef *hfdcan,
+                               FdcanBus::Frame &frame,
+                               uint32_t rx_location)
+{
+    if (hfdcan == nullptr) {
+        return HAL_ERROR;
+    }
+
+    FDCAN_RxHeaderTypeDef header = {};
+    const HAL_StatusTypeDef status = HAL_FDCAN_GetRxMessage(hfdcan, rx_location, &header, frame.data);
+    if (status != HAL_OK) {
+        return status;
+    }
+
+    frame.id = header.Identifier;
+    frame.id_type = header.IdType;
+    frame.frame_type = header.RxFrameType;
+    frame.data_length = header.DataLength;
+    frame.error_state_indicator = header.ErrorStateIndicator;
+    frame.bitrate_switch = header.BitRateSwitch;
+    frame.fd_format = header.FDFormat;
+    return HAL_OK;
+}
+
 void dispatchReceive(FdcanBus *bus, FDCAN_HandleTypeDef *hfdcan, uint32_t rx_location)
 {
     CallbackState *state = findCallbackState(hfdcan);
-    if (bus == nullptr || state == nullptr ||
-        state->receive_location != rx_location || !state->receive_callback) {
+    if (bus == nullptr || state == nullptr) {
+        return;
+    }
+
+    const auto callbacks_it = state->receive_callbacks.find(rx_location);
+    if (callbacks_it == state->receive_callbacks.end() || callbacks_it->second.empty()) {
         return;
     }
 
     while (HAL_FDCAN_GetRxFifoFillLevel(hfdcan, rx_location) != 0U) {
         FdcanBus::Frame frame = {};
-        if (bus->receive(frame, rx_location) != HAL_OK) {
+        if (receiveFrame(hfdcan, frame, rx_location) != HAL_OK) {
             return;
         }
-        state->receive_callback(static_cast<void *>(&frame));
+
+        for (const auto &callback : callbacks_it->second) {
+            if (callback) {
+                callback(frame);
+            }
+        }
     }
 }
 
@@ -243,28 +276,6 @@ HAL_StatusTypeDef FdcanBus::transmit(uint32_t id, const uint8_t *data, uint8_t l
     return transmit(frame, std::move(cplt_cb));
 }
 
-HAL_StatusTypeDef FdcanBus::receive(Frame &frame, uint32_t rx_location) const
-{
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
-
-    FDCAN_RxHeaderTypeDef header = {};
-    const HAL_StatusTypeDef status = HAL_FDCAN_GetRxMessage(handle_, rx_location, &header, frame.data);
-    if (status != HAL_OK) {
-        return status;
-    }
-
-    frame.id = header.Identifier;
-    frame.id_type = header.IdType;
-    frame.frame_type = header.RxFrameType;
-    frame.data_length = header.DataLength;
-    frame.error_state_indicator = header.ErrorStateIndicator;
-    frame.bitrate_switch = header.BitRateSwitch;
-    frame.fd_format = header.FDFormat;
-    return HAL_OK;
-}
-
 HAL_StatusTypeDef FdcanBus::transmit(const Frame &frame,
                                      std::function<void(void *)> cplt_cb) const
 {
@@ -307,17 +318,17 @@ HAL_StatusTypeDef FdcanBus::transmit(const Frame &frame,
     return HAL_OK;
 }
 
-HAL_StatusTypeDef FdcanBus::register_recv_cb(std::function<void(void *)> recv_cb,
+HAL_StatusTypeDef FdcanBus::register_recv_cb(std::function<void(const Frame &)> recv_cb,
                                              uint32_t rx_location) const
 {
-    if (handle_ == nullptr || (rx_location != FDCAN_RX_FIFO0 && rx_location != FDCAN_RX_FIFO1)) {
+    if (handle_ == nullptr || !recv_cb ||
+        (rx_location != FDCAN_RX_FIFO0 && rx_location != FDCAN_RX_FIFO1)) {
         return HAL_ERROR;
     }
 
     handle_map[handle_] = const_cast<FdcanBus *>(this);
     CallbackState &state = callback_states[handle_];
-    state.receive_location = rx_location;
-    state.receive_callback = std::move(recv_cb);
+    state.receive_callbacks[rx_location].push_back(std::move(recv_cb));
     return HAL_OK;
 }
 

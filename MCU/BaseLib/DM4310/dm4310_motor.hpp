@@ -55,6 +55,7 @@ public:
 
     explicit DM4310Motor(void* param);
     explicit DM4310Motor(const DM4310MotorParam& param);
+    DM4310Motor(bsp::FdcanBus& bus, const DM4310MotorParam& param);
 
     bool init() override;
     bool enable() override;
@@ -66,17 +67,15 @@ public:
     void set_offset(float offset);
     void set_ratio(float ratio);
 
-    bool configure(const DM4310MotorParam& param);
-    bool set_encoder_to_joint(float zero_angle_offset, float reduction_ratio);
-
     bool mit_control(float joint_pos, float joint_vel, float joint_torque, float joint_kp, float joint_kd);
     bool mit_control_raw(float motor_pos, float motor_vel, float motor_torque, float kp, float kd);
 
     bool handle_feedback(const bsp::FdcanBus::Frame& frame);
-    bool handle_feedback(uint32_t frame_id, const uint8_t* data, uint8_t length);
 
-    const DM4310MotorState& state() const { return state_; }
-    bool has_state() const { return has_state_; }
+private:
+    static constexpr uint8_t kCommandLength = 8U;
+    static constexpr uint8_t kFeedbackLength = 8U;
+    static constexpr uint8_t kFeedbackIdMask = 0x0FU;
 
     float motor_to_joint_position(float motor_position) const;
     float motor_to_joint_velocity(float motor_velocity) const;
@@ -85,16 +84,13 @@ public:
     float joint_to_motor_velocity(float joint_velocity) const;
     float joint_to_motor_torque(float joint_torque) const;
 
-private:
-    static constexpr uint8_t kCommandLength = 8U;
-    static constexpr uint8_t kFeedbackLength = 8U;
-    static constexpr uint8_t kFeedbackIdMask = 0x0FU;
-
     static float clamp(float value, float min_value, float max_value);
     static uint32_t float_to_uint(float value, float min_value, float max_value, uint8_t bits);
     static float uint_to_float(uint32_t value, float min_value, float max_value, uint8_t bits);
 
+    void initialize(const DM4310MotorParam& param);
     bool send(uint32_t id, const uint8_t* data, uint8_t length);
+    bool register_feedback_callback();
     void update_joint_state();
 
     bsp::FdcanBus* bus_ = nullptr;
@@ -110,4 +106,5 @@ private:
 
     DM4310MotorState state_ = {};
     bool has_state_ = false;
+    bool feedback_callback_registered_ = false;
 };

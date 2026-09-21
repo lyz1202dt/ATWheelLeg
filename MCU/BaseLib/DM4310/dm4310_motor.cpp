@@ -5,13 +5,20 @@ static_assert(sizeof(float) == 4U, "DM4310 float control frames require 32-bit f
 DM4310Motor::DM4310Motor(void* param) : Motor(param)
 {
     if (param != nullptr) {
-        configure(*static_cast<DM4310MotorParam*>(param));
+        initialize(*static_cast<DM4310MotorParam*>(param));
     }
 }
 
 DM4310Motor::DM4310Motor(const DM4310MotorParam& param) : Motor(nullptr)
 {
-    configure(param);
+    initialize(param);
+}
+
+DM4310Motor::DM4310Motor(bsp::FdcanBus& bus, const DM4310MotorParam& param) : Motor(nullptr)
+{
+    DM4310MotorParam bus_param = param;
+    bus_param.bus = &bus;
+    initialize(bus_param);
 }
 
 bool DM4310Motor::init()
@@ -25,11 +32,11 @@ bool DM4310Motor::set_command(float pos, float vel, float torque, float kp, floa
     return mit_control(pos, vel, torque, kp, kd);
 }
 
-bool DM4310Motor::configure(const DM4310MotorParam& param)
+void DM4310Motor::initialize(const DM4310MotorParam& param)
 {
-    if (param.reduction_ratio == 0.0F || param.position_limit <= 0.0F || param.velocity_limit <= 0.0F
+    if (param.bus == nullptr || param.reduction_ratio == 0.0F || param.position_limit <= 0.0F || param.velocity_limit <= 0.0F
         || param.torque_limit <= 0.0F) {
-        return false;
+        return;
     }
 
     bus_ = param.bus;
@@ -43,19 +50,7 @@ bool DM4310Motor::configure(const DM4310MotorParam& param)
     zero_angle_offset_ = param.zero_angle_offset;
     reduction_ratio_ = param.reduction_ratio;
     update_joint_state();
-    return true;
-}
-
-bool DM4310Motor::set_encoder_to_joint(float zero_angle_offset, float reduction_ratio)
-{
-    if (reduction_ratio == 0.0F) {
-        return false;
-    }
-
-    zero_angle_offset_ = zero_angle_offset;
-    reduction_ratio_ = reduction_ratio;
-    update_joint_state();
-    return true;
+    register_feedback_callback();
 }
 
 bool DM4310Motor::mit_control(float joint_pos, float joint_vel, float joint_torque, float joint_kp, float joint_kd)
@@ -133,31 +128,29 @@ bool DM4310Motor::clear_error(int)
 bool DM4310Motor::handle_feedback(const bsp::FdcanBus::Frame& frame)
 {
     const uint8_t length = bsp::FdcanBus::dlcToLength(frame.data_length);
-    return handle_feedback(frame.id, frame.data, length);
-}
-
-bool DM4310Motor::handle_feedback(uint32_t frame_id, const uint8_t* data, uint8_t length)
-{
-    if (data == nullptr || length < kFeedbackLength || frame_id != rx_id_) {
+    if (length < kFeedbackLength || frame.id != rx_id_) {
         return false;
     }
 
-    const uint8_t feedback_id = data[0] & kFeedbackIdMask;
+    const uint8_t feedback_id = frame.data[0] & kFeedbackIdMask;
     if (feedback_id != (tx_id_ & kFeedbackIdMask)) {
         return false;
     }
 
-    const uint32_t pos_tmp = (static_cast<uint32_t>(data[1]) << 8U) | static_cast<uint32_t>(data[2]);
-    const uint32_t vel_tmp = (static_cast<uint32_t>(data[3]) << 4U) | (static_cast<uint32_t>(data[4]) >> 4U);
-    const uint32_t torque_tmp = ((static_cast<uint32_t>(data[4]) & 0x0FU) << 8U) | static_cast<uint32_t>(data[5]);
+    const uint32_t pos_tmp =
+        (static_cast<uint32_t>(frame.data[1]) << 8U) | static_cast<uint32_t>(frame.data[2]);
+    const uint32_t vel_tmp =
+        (static_cast<uint32_t>(frame.data[3]) << 4U) | (static_cast<uint32_t>(frame.data[4]) >> 4U);
+    const uint32_t torque_tmp =
+        ((static_cast<uint32_t>(frame.data[4]) & 0x0FU) << 8U) | static_cast<uint32_t>(frame.data[5]);
 
     state_.id = feedback_id;
-    state_.error = data[0] >> 4U;
+    state_.error = frame.data[0] >> 4U;
     state_.motor_position = uint_to_float(pos_tmp, -position_limit_, position_limit_, 16U);
     state_.motor_velocity = uint_to_float(vel_tmp, -velocity_limit_, velocity_limit_, 12U);
     state_.motor_torque = uint_to_float(torque_tmp, -torque_limit_, torque_limit_, 12U);
-    state_.mos_temperature = static_cast<float>(data[6]);
-    state_.rotor_temperature = static_cast<float>(data[7]);
+    state_.mos_temperature = static_cast<float>(frame.data[6]);
+    state_.rotor_temperature = static_cast<float>(frame.data[7]);
     update_joint_state();
     has_state_ = true;
     return true;
@@ -167,22 +160,6 @@ float DM4310Motor::motor_to_joint_position(float motor_position) const
 {
     // Inverse of: motor_position = joint_position * reduction_ratio_ + zero_angle_offset_.
     return (motor_position - zero_angle_offset_) / reduction_ratio_;
-}
-
-void DM4310Motor::set_offset(float offset)
-{
-    zero_angle_offset_ = offset;
-    update_joint_state();
-}
-
-void DM4310Motor::set_ratio(float ratio)
-{
-    if (ratio == 0.0F) {
-        return;
-    }
-
-    reduction_ratio_ = ratio;
-    update_joint_state();
 }
 
 float DM4310Motor::motor_to_joint_velocity(float motor_velocity) const
@@ -246,6 +223,23 @@ bool DM4310Motor::send(uint32_t id, const uint8_t* data, uint8_t length)
     return bus_->transmit(id, data, length) == HAL_OK;
 }
 
+bool DM4310Motor::register_feedback_callback()
+{
+    if (bus_ == nullptr) {
+        return false;
+    }
+    if (feedback_callback_registered_) {
+        return true;
+    }
+
+    const HAL_StatusTypeDef status =
+        bus_->register_recv_cb([this](const bsp::FdcanBus::Frame& frame) {
+            handle_feedback(frame);
+        });
+    feedback_callback_registered_ = (status == HAL_OK);
+    return feedback_callback_registered_;
+}
+
 void DM4310Motor::update_joint_state()
 {
     if (reduction_ratio_ == 0.0F) {
@@ -255,4 +249,10 @@ void DM4310Motor::update_joint_state()
     state_.joint_position = motor_to_joint_position(state_.motor_position);
     state_.joint_velocity = motor_to_joint_velocity(state_.motor_velocity);
     state_.joint_torque = motor_to_joint_torque(state_.motor_torque);
+
+    state.r = 0;
+    state.rad = state_.joint_position;
+    state.continue_rad = state_.joint_position;
+    state.vel = state_.joint_velocity;
+    state.toqeue = state_.joint_torque;
 }
