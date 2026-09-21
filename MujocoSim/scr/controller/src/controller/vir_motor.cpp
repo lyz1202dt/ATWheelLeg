@@ -13,11 +13,17 @@ VirMotor::VirMotor()
 bool VirMotor::bind(hardware_interface::LoanedStateInterface* position_state,
                     hardware_interface::LoanedStateInterface* velocity_state,
                     hardware_interface::LoanedStateInterface* effort_state,
+                    hardware_interface::LoanedCommandInterface* position_command,
+                    hardware_interface::LoanedCommandInterface* velocity_command,
                     hardware_interface::LoanedCommandInterface* effort_command,
+                    hardware_interface::LoanedCommandInterface* kp_command,
+                    hardware_interface::LoanedCommandInterface* kd_command,
                     double effort_limit)
 {
     if (position_state == nullptr || velocity_state == nullptr ||
-        effort_state == nullptr || effort_command == nullptr ||
+        effort_state == nullptr || position_command == nullptr ||
+        velocity_command == nullptr || effort_command == nullptr ||
+        kp_command == nullptr || kd_command == nullptr ||
         !std::isfinite(effort_limit) || effort_limit <= 0.0) {
         bound_ = false;
         return false;
@@ -26,7 +32,11 @@ bool VirMotor::bind(hardware_interface::LoanedStateInterface* position_state,
     position_state_ = position_state;
     velocity_state_ = velocity_state;
     effort_state_ = effort_state;
+    position_command_ = position_command;
+    velocity_command_ = velocity_command;
     effort_command_ = effort_command;
+    kp_command_ = kp_command;
+    kd_command_ = kd_command;
     effort_limit_ = effort_limit;
     bound_ = true;
     return true;
@@ -47,7 +57,11 @@ bool VirMotor::disable()
     if (!bound_) {
         return false;
     }
+    position_command_->set_value(0.0);
+    velocity_command_->set_value(0.0);
     effort_command_->set_value(0.0);
+    kp_command_->set_value(0.0);
+    kd_command_->set_value(0.0);
     return true;
 }
 
@@ -71,17 +85,11 @@ bool VirMotor::set_command(float pos,
         return false;
     }
 
-    double effort = static_cast<double>(tor);
-    if (std::isfinite(pos) && std::isfinite(kp)) {
-        effort += static_cast<double>(kp) *
-                  (static_cast<double>(pos) - static_cast<double>(state.rad));
-    }
-    if (std::isfinite(vel) && std::isfinite(kd)) {
-        effort += static_cast<double>(kd) *
-                  (static_cast<double>(vel) - static_cast<double>(state.vel));
-    }
-
-    effort_command_->set_value(clamp(effort, effort_limit_));
+    position_command_->set_value(std::isfinite(pos) ? static_cast<double>(pos) : 0.0);
+    velocity_command_->set_value(std::isfinite(vel) ? static_cast<double>(vel) : 0.0);
+    effort_command_->set_value(clamp(static_cast<double>(tor), effort_limit_));
+    kp_command_->set_value(std::isfinite(kp) ? static_cast<double>(kp) : 0.0);
+    kd_command_->set_value(std::isfinite(kd) ? static_cast<double>(kd) : 0.0);
     return true;
 }
 

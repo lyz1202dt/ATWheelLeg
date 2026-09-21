@@ -11,6 +11,10 @@ namespace lqr_controller {
 
 namespace {
 
+constexpr size_t kMotorCount = 6U;
+constexpr size_t kTargetInterfacesPerMotor = 5U;
+constexpr char kReferencePrefix[] = "mujoco_sim_controller";
+
 template <typename Interface>
 Interface* find_interface(std::vector<Interface>& interfaces,
                           const std::string& name)
@@ -61,10 +65,32 @@ controller_interface::CallbackReturn LQRController::on_init()
     auto_declare<std::string>("imu_pose_topic", imu_pose_topic_);
     auto_declare<std::string>("cmd_vel_topic", cmd_vel_topic_);
     auto_declare<double>("effort_limit", effort_limit_);
-    auto_declare<double>("desired_height", desired_height_);
     auto_declare<int>("mode", requested_mode_);
-    auto_declare<std::vector<double>>("q_diag", to_vector(q_diag_));
-    auto_declare<std::vector<double>>("r_diag", to_vector(r_diag_));
+
+    auto_declare<double>("body_width", controller_params_.body_width);
+    auto_declare<double>(
+        "base_link_com_height", controller_params_.base_link_com_height);
+    auto_declare<double>(
+        "centrifugal_accel_filter_alpha",
+        controller_params_.centrifugal_accel_filter_alpha);
+    auto_declare<double>(
+        "centrifugal_force_ff_gain",
+        controller_params_.centrifugal_force_ff_gain);
+    auto_declare<double>(
+        "centrifugal_force_ff_limit",
+        controller_params_.centrifugal_force_ff_limit);
+    auto_declare<double>("leg_exp_length", controller_params_.leg_exp_length);
+    auto_declare<double>("vmc_kp", controller_params_.vmc_kp);
+    auto_declare<double>("vmc_kd", controller_params_.vmc_kd);
+    auto_declare<double>(
+        "leg_angle_diff_kp", controller_params_.leg_angle_diff_kp);
+    auto_declare<double>(
+        "leg_angle_diff_kd", controller_params_.leg_angle_diff_kd);
+    auto_declare<double>("wheel_diff_kp", controller_params_.wheel_diff_kp);
+    auto_declare<double>("wheel_diff_ki", controller_params_.wheel_diff_ki);
+
+    auto_declare<std::vector<double>>("K.lengths", std::vector<double>{});
+    auto_declare<std::vector<double>>("K.values", std::vector<double>{});
     return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -72,56 +98,55 @@ controller_interface::CallbackReturn LQRController::on_configure(
     const rclcpp_lifecycle::State& previous_state)
 {
     (void)previous_state;
-    RCLCPP_INFO(get_node()->get_logger(), "Configuring virtual IMU and motors");
 
     imu_topic_ = get_node()->get_parameter("imu_topic").as_string();
     imu_pose_topic_ = get_node()->get_parameter("imu_pose_topic").as_string();
     cmd_vel_topic_ = get_node()->get_parameter("cmd_vel_topic").as_string();
     effort_limit_ = get_node()->get_parameter("effort_limit").as_double();
-    desired_height_ =
-        static_cast<float>(get_node()->get_parameter("desired_height").as_double());
     requested_mode_ = get_node()->get_parameter("mode").as_int();
 
-    std::vector<double> q_values;
-    std::vector<double> r_values;
+    controller_params_.body_width =
+        get_node()->get_parameter("body_width").as_double();
+    controller_params_.base_link_com_height =
+        get_node()->get_parameter("base_link_com_height").as_double();
+    controller_params_.centrifugal_accel_filter_alpha =
+        get_node()->get_parameter("centrifugal_accel_filter_alpha").as_double();
+    controller_params_.centrifugal_force_ff_gain =
+        get_node()->get_parameter("centrifugal_force_ff_gain").as_double();
+    controller_params_.centrifugal_force_ff_limit =
+        get_node()->get_parameter("centrifugal_force_ff_limit").as_double();
+    controller_params_.leg_exp_length =
+        get_node()->get_parameter("leg_exp_length").as_double();
+    controller_params_.vmc_kp = get_node()->get_parameter("vmc_kp").as_double();
+    controller_params_.vmc_kd = get_node()->get_parameter("vmc_kd").as_double();
+    controller_params_.leg_angle_diff_kp =
+        get_node()->get_parameter("leg_angle_diff_kp").as_double();
+    controller_params_.leg_angle_diff_kd =
+        get_node()->get_parameter("leg_angle_diff_kd").as_double();
+    controller_params_.wheel_diff_kp =
+        get_node()->get_parameter("wheel_diff_kp").as_double();
+    controller_params_.wheel_diff_ki =
+        get_node()->get_parameter("wheel_diff_ki").as_double();
+
     if (!numeric_array_parameter(
-            get_node()->get_parameter("q_diag"), q_values) ||
+            get_node()->get_parameter("K.lengths"), gain_lengths_) ||
         !numeric_array_parameter(
-            get_node()->get_parameter("r_diag"), r_values) ||
-        q_values.size() != q_diag_.size() ||
-        r_values.size() != r_diag_.size()) {
+            get_node()->get_parameter("K.values"), gain_values_)) {
         RCLCPP_ERROR(
             get_node()->get_logger(),
-            "q_diag must have 6 values and r_diag must have 2 values");
+            "K.lengths and K.values must be numeric arrays");
         return controller_interface::CallbackReturn::ERROR;
     }
-    for (size_t index = 0; index < q_diag_.size(); ++index) {
-        if (!std::isfinite(q_values[index]) || q_values[index] < 0.0) {
-            RCLCPP_ERROR(
-                get_node()->get_logger(),
-                "q_diag values must be finite and non-negative");
-            return controller_interface::CallbackReturn::ERROR;
-        }
-        q_diag_[index] = static_cast<float>(q_values[index]);
-    }
-    for (size_t index = 0; index < r_diag_.size(); ++index) {
-        if (!std::isfinite(r_values[index]) || r_values[index] <= 0.0) {
-            RCLCPP_ERROR(
-                get_node()->get_logger(),
-                "r_diag values must be finite and positive");
-            return controller_interface::CallbackReturn::ERROR;
-        }
-        r_diag_[index] = static_cast<float>(r_values[index]);
-    }
 
+    std::string configuration_error;
     if (!std::isfinite(effort_limit_) || effort_limit_ <= 0.0 ||
-        !std::isfinite(desired_height_) || desired_height_ <= 0.0F ||
         requested_mode_ < 0 || requested_mode_ > 3 ||
         !imu_.configure(get_node(), imu_topic_, imu_pose_topic_) ||
-        !configure_lqr_gain()) {
+        !configure_controller()) {
         RCLCPP_ERROR(
             get_node()->get_logger(),
-            "Failed to configure virtual controller adapters or LQR gain");
+            "Failed to configure controller parameters, IMU, or gain table: %s",
+            configuration_error.c_str());
         return controller_interface::CallbackReturn::ERROR;
     }
 
@@ -129,8 +154,6 @@ controller_interface::CallbackReturn LQRController::on_configure(
         cmd_vel_topic_,
         10,
         [this](const geometry_msgs::msg::Twist& msg) { cmd_vel_callback(msg); });
-
-    RCLCPP_INFO(get_node()->get_logger(), "Virtual controller configured");
     return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -138,21 +161,16 @@ controller_interface::CallbackReturn LQRController::on_activate(
     const rclcpp_lifecycle::State& previous_state)
 {
     (void)previous_state;
-    RCLCPP_INFO(get_node()->get_logger(), "Binding virtual motors");
     if (!bind_motor_interfaces()) {
         RCLCPP_ERROR(
             get_node()->get_logger(),
-            "Failed to bind virtual motors to ros2_control interfaces");
+            "Failed to bind virtual motors to chained ros2_control interfaces");
         return controller_interface::CallbackReturn::ERROR;
     }
 
     const bool enabled = lf_motor_.enable() && rf_motor_.enable() &&
                          lb_motor_.enable() && rb_motor_.enable() &&
                          lw_motor_.enable() && rw_motor_.enable();
-    RCLCPP_INFO(
-        get_node()->get_logger(),
-        "Virtual motor binding %s",
-        enabled ? "succeeded" : "failed");
     return enabled ? controller_interface::CallbackReturn::SUCCESS
                    : controller_interface::CallbackReturn::ERROR;
 }
@@ -184,16 +202,12 @@ controller_interface::return_type LQRController::update(
         return controller_interface::return_type::ERROR;
     }
 
-    const double dt = period.seconds();
     controller_.input(
         expected_velocity_.load(std::memory_order_relaxed),
         expected_omega_.load(std::memory_order_relaxed),
-        desired_height_,
+        static_cast<float>(controller_params_.leg_exp_length),
         requested_mode_);
-
-    // Core::Controller owns the state machine, LQR/VMC calculation, and all
-    // motor commands. This wrapper only adapts ROS 2 data to its interfaces.
-    (void)controller_.update(static_cast<float>(dt));
+    (void)controller_.update(static_cast<float>(period.seconds()));
     return controller_interface::return_type::OK;
 }
 
@@ -204,8 +218,13 @@ LQRController::command_interface_configuration() const
     configuration.type =
         controller_interface::interface_configuration_type::INDIVIDUAL;
     for (const auto* joint_name : motor_joint_names_) {
-        configuration.names.emplace_back(
-            std::string(joint_name) + "/effort");
+        const std::string prefix =
+            std::string(kReferencePrefix) + "/" + joint_name + "/";
+        configuration.names.emplace_back(prefix + "position");
+        configuration.names.emplace_back(prefix + "velocity");
+        configuration.names.emplace_back(prefix + "effort");
+        configuration.names.emplace_back(prefix + "kp");
+        configuration.names.emplace_back(prefix + "kd");
     }
     return configuration;
 }
@@ -235,21 +254,37 @@ bool LQRController::bind_motor_interfaces()
 
     for (size_t index = 0; index < kMotorCount; ++index) {
         const std::string joint_name(motor_joint_names_[index]);
-        auto* position_state = find_interface(
-            state_interfaces_, joint_name + "/position");
-        auto* velocity_state = find_interface(
-            state_interfaces_, joint_name + "/velocity");
-        auto* effort_state = find_interface(
-            state_interfaces_, joint_name + "/effort");
-        auto* effort_command = find_interface(
-            command_interfaces_, joint_name + "/effort");
+        const std::string prefix =
+            std::string(kReferencePrefix) + "/" + joint_name + "/";
+        auto* position_state =
+            find_interface(state_interfaces_, joint_name + "/position");
+        auto* velocity_state =
+            find_interface(state_interfaces_, joint_name + "/velocity");
+        auto* effort_state =
+            find_interface(state_interfaces_, joint_name + "/effort");
+        auto* position_command =
+            find_interface(command_interfaces_, prefix + "position");
+        auto* velocity_command =
+            find_interface(command_interfaces_, prefix + "velocity");
+        auto* effort_command =
+            find_interface(command_interfaces_, prefix + "effort");
+        auto* kp_command =
+            find_interface(command_interfaces_, prefix + "kp");
+        auto* kd_command =
+            find_interface(command_interfaces_, prefix + "kd");
         if (position_state == nullptr || velocity_state == nullptr ||
-            effort_state == nullptr || effort_command == nullptr ||
+            effort_state == nullptr || position_command == nullptr ||
+            velocity_command == nullptr || effort_command == nullptr ||
+            kp_command == nullptr || kd_command == nullptr ||
             !motors[index]->bind(
                 position_state,
                 velocity_state,
                 effort_state,
+                position_command,
+                velocity_command,
                 effort_command,
+                kp_command,
+                kd_command,
                 effort_limit_)) {
             return false;
         }
@@ -257,14 +292,18 @@ bool LQRController::bind_motor_interfaces()
     return true;
 }
 
-bool LQRController::configure_lqr_gain()
+bool LQRController::configure_controller()
 {
-    Eigen::Matrix<double, 2, 6> gain;
-    if (!controller_.calculate_lqr_gain(
-            q_diag_.data(), r_diag_.data(), gain)) {
+    if (!controller_.set_params(controller_params_)) {
         return false;
     }
-    return controller_.set_K(gain);
+    std::string error;
+    if (!controller_.set_gain_table(gain_lengths_, gain_values_, error)) {
+        RCLCPP_ERROR(
+            get_node()->get_logger(), "Invalid LQR gain table: %s", error.c_str());
+        return false;
+    }
+    return true;
 }
 
 bool LQRController::read_motor_states()
@@ -284,18 +323,6 @@ void LQRController::cmd_vel_callback(const geometry_msgs::msg::Twist& msg)
         expected_omega_.store(
             static_cast<float>(msg.angular.z), std::memory_order_relaxed);
     }
-}
-
-std::vector<double> LQRController::to_vector(
-    const std::array<float, 6>& values)
-{
-    return std::vector<double>(values.begin(), values.end());
-}
-
-std::vector<double> LQRController::to_vector(
-    const std::array<float, 2>& values)
-{
-    return std::vector<double>(values.begin(), values.end());
 }
 
 }  // namespace lqr_controller

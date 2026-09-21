@@ -45,13 +45,9 @@ private:
     static constexpr size_t kStateInterfacesPerMotor = 3;
 
     bool bind_motor_interfaces();
-    bool configure_lqr_gain();
+    bool configure_controller();
     bool read_motor_states();
     void cmd_vel_callback(const geometry_msgs::msg::Twist& msg);
-    static std::vector<double> to_vector(
-        const std::array<float, 6>& values);
-    static std::vector<double> to_vector(
-        const std::array<float, 2>& values);
 
     VirIMU imu_;
     VirMotor lf_motor_;
@@ -75,15 +71,14 @@ private:
 
     std::atomic<float> expected_velocity_{0.0F};
     std::atomic<float> expected_omega_{0.0F};
-    float desired_height_{0.21F};
     int requested_mode_{0};
     double effort_limit_{20.0};
     std::string imu_topic_{"/imu_imu_sensor/imu"};
     std::string imu_pose_topic_{"/imu_pose_sensor/pose"};
     std::string cmd_vel_topic_{"/cmd_vel"};
-    std::array<float, 6> q_diag_ = {
-        10.0F, 400.0F, 100.0F, 40.0F, 600.0F, 50.0F};
-    std::array<float, 2> r_diag_ = {8.0F, 0.5F};
+    Controller::Params controller_params_{};
+    std::vector<double> gain_lengths_;
+    std::vector<double> gain_values_;
 };
 
 }  // namespace lqr_controller

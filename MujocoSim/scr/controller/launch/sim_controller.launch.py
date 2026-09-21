@@ -3,7 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler
-from launch.event_handlers import OnProcessStart
+from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import xacro
@@ -37,6 +37,13 @@ def generate_launch_description():
         output="screen",
     )
 
+    mujoco_sim_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["mujoco_sim_controller", "--controller-manager", "/controller_manager"],
+        output="screen",
+    )
+
     lqr_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -44,10 +51,17 @@ def generate_launch_description():
         output="screen",
     )
 
-    load_lqr_controller = RegisterEventHandler(
+    load_controllers = RegisterEventHandler(
         OnProcessStart(
             target_action=mujoco,
-            on_start=[lqr_controller_spawner],
+            on_start=[mujoco_sim_controller_spawner],
+        )
+    )
+
+    load_lqr_controller = RegisterEventHandler(
+        OnProcessExit(
+            target_action=mujoco_sim_controller_spawner,
+            on_exit=[lqr_controller_spawner],
         )
     )
 
@@ -57,6 +71,7 @@ def generate_launch_description():
             DeclareLaunchArgument("simulation_frequency", default_value="500.0"),
             DeclareLaunchArgument("realtime_factor", default_value="1.0"),
             mujoco,
+            load_controllers,
             load_lqr_controller,
         ]
     )

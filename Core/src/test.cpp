@@ -20,14 +20,19 @@ int main()
     }
 
     Controller controller(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-    Eigen::Matrix<double, 2, 6> gain;
-    if (!controller.calculate_lqr_gain(
-            lqr_q_diag,
-            lqr_r_diag,
-            gain) ||
-        !gain.allFinite() ||
-        !controller.set_K(gain)) {
-        std::cerr << "LQR gain calculation failed\n";
+    std::string error;
+    if (!controller.set_gain_table(
+            {0.20, 0.28, 0.34},
+            {
+                -0.2175, -1.0147, -8.1376, -2.5916, 6.9973, 1.8424,
+                0.0778, 0.3826, 6.1639, 2.3130, 24.8878, 6.6832,
+                -0.2247, -1.0360, -8.8680, -2.8228, 6.1353, 1.6259,
+                0.0683, 0.3305, 5.7885, 2.0287, 26.0139, 6.9852,
+                -0.2247, -1.0360, -8.8680, -2.8228, 6.1353, 1.6259,
+                0.0683, 0.3305, 5.7885, 2.0287, 26.0139, 6.9852,
+            },
+            error)) {
+        std::cerr << "LQR gain table validation failed: " << error << '\n';
         return 1;
     }
 

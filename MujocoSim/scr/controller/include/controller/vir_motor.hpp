@@ -16,7 +16,11 @@ public:
     bool bind(hardware_interface::LoanedStateInterface* position_state,
               hardware_interface::LoanedStateInterface* velocity_state,
               hardware_interface::LoanedStateInterface* effort_state,
+              hardware_interface::LoanedCommandInterface* position_command,
+              hardware_interface::LoanedCommandInterface* velocity_command,
               hardware_interface::LoanedCommandInterface* effort_command,
+              hardware_interface::LoanedCommandInterface* kp_command,
+              hardware_interface::LoanedCommandInterface* kd_command,
               double effort_limit);
 
     bool init() override;
@@ -37,7 +41,11 @@ private:
     hardware_interface::LoanedStateInterface* position_state_ = nullptr;
     hardware_interface::LoanedStateInterface* velocity_state_ = nullptr;
     hardware_interface::LoanedStateInterface* effort_state_ = nullptr;
+    hardware_interface::LoanedCommandInterface* position_command_ = nullptr;
+    hardware_interface::LoanedCommandInterface* velocity_command_ = nullptr;
     hardware_interface::LoanedCommandInterface* effort_command_ = nullptr;
+    hardware_interface::LoanedCommandInterface* kp_command_ = nullptr;
+    hardware_interface::LoanedCommandInterface* kd_command_ = nullptr;
     double effort_limit_ = 20.0;
     bool bound_ = false;
 };
