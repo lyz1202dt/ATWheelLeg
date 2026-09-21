@@ -2,11 +2,14 @@
 #include "bmi088_imu.hpp"
 #include "controller.hpp"
 #include "hardware.hpp"
+#include "k_tab.hpp"
 
 #include "motorbase.hpp"
 
 #include <FreeRTOS.h>
 #include <task.h>
+
+#include <vector>
 
 TaskHandle_t imu_task_handle;
 TaskHandle_t motor_task_handle;
@@ -41,7 +44,6 @@ void app_main(void) {
     bmi088_imu.init();
 
     xTaskCreate(IMUTask, "imu_task", 1024, nullptr, 4, &imu_task_handle);
-    xTaskCreate(LqrTask, "lqr_task", 4096, nullptr, 1, &lqr_task_handle);
     vTaskDelay(pdMS_TO_TICKS(500));
     xTaskCreate(MotorTask, "motor_task", 512, nullptr, 4, &motor_task_handle);
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -63,12 +65,9 @@ void TestTask(void* param) {
 
 void IMUTask(void* param) {
     (void)param;
-    Eigen::Quaternionf q         = Eigen::Quaternionf::Identity();
-    Eigen::Vector3d angular      = Eigen::Vector3d::Zero();
-    Eigen::Vector3d acceleration = Eigen::Vector3d::Zero();
     TickType_t last_wake_time = xTaskGetTickCount();
     for (;;) {
-        (void)imu->update(q, angular, acceleration, 0.001F);
+        (void)imu->update(0.001F);
         vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(1));
     }
 }
@@ -89,34 +88,18 @@ void ControlTask(void* param) {
     controller->rb  = rb_motor;
     controller->lw  = lw_motor;
     controller->rw  = rw_motor;
+    const std::vector<double> lengths(
+        k_length, k_length + kGainTableLengthCount);
+    const std::vector<double> values(
+        k_tab, k_tab + kGainTableValueCount);
+    std::string err_str;
+    if (!controller->set_gain_table(lengths, values, err_str)) {
+        vTaskDelete(nullptr);
+        return;
+    }
     TickType_t last_wake_time = xTaskGetTickCount();
     for (;;) {
         (void)controller->update(0.002f);
         vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(2));
-    }
-}
-
-void LqrTask(void* param) {
-    (void)param;
-    uint32_t consumed_request = 0U;
-
-    for (;;) {
-        const uint32_t request = lqr_gain_update_request;
-        if (controller != nullptr && request != consumed_request) {
-            float q_diag[6] = {};
-            float r_diag[2] = {};
-            for (uint32_t index = 0U; index < 6U; ++index) {
-                q_diag[index] = lqr_q_diag[index];
-            }
-            for (uint32_t index = 0U; index < 2U; ++index) {
-                r_diag[index] = lqr_r_diag[index];
-            }
-
-            Eigen::Matrix<double, 2, 6> gain;
-            if (controller->calculate_lqr_gain(q_diag, r_diag, gain) && controller->set_K(gain)) {
-                consumed_request = request;
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

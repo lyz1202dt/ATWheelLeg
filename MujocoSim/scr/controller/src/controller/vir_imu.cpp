@@ -14,12 +14,12 @@ bool VirIMU::configure(const rclcpp_lifecycle::LifecycleNode::SharedPtr& node,
 
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        orientation_ = Eigen::Quaternionf::Identity();
-        angular_velocity_.setZero();
-        acceleration_.setZero();
         imu_received_ = false;
         orientation_received_ = false;
     }
+    lock_memory();
+    state_valid_ = false;
+    unlock_memory();
     ready_.store(false, std::memory_order_release);
 
     imu_subscriber_ = node->create_subscription<sensor_msgs::msg::Imu>(
@@ -43,13 +43,10 @@ bool VirIMU::is_ready()
     return ready_.load(std::memory_order_acquire);
 }
 
-bool VirIMU::update(Eigen::Quaternionf& q,
-                    Eigen::Vector3d& angular,
-                    Eigen::Vector3d& acc,
-                    const float& dt)
+bool VirIMU::update(const float& dt)
 {
     (void)dt;
-    return is_ready() && read_state(q, angular, acc);
+    return is_ready();
 }
 
 void VirIMU::imu_callback(const sensor_msgs::msg::Imu& msg)
@@ -60,24 +57,36 @@ void VirIMU::imu_callback(const sensor_msgs::msg::Imu& msg)
         static_cast<float>(msg.orientation.y),
         static_cast<float>(msg.orientation.z));
 
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    angular_velocity_ = Eigen::Vector3d(
+    const Eigen::Vector3d next_angular_velocity(
         msg.angular_velocity.x,
         msg.angular_velocity.y,
         msg.angular_velocity.z);
-    acceleration_ = Eigen::Vector3d(
+    const Eigen::Vector3d next_acceleration(
         msg.linear_acceleration.x,
         msg.linear_acceleration.y,
         msg.linear_acceleration.z);
-    imu_received_ = angular_velocity_.allFinite() && acceleration_.allFinite();
+    const bool imu_valid =
+        next_angular_velocity.allFinite() && next_acceleration.allFinite();
+    const bool orientation_valid =
+        message_orientation.coeffs().allFinite() &&
+        message_orientation.squaredNorm() > 1.0e-8F;
 
-    if (message_orientation.coeffs().allFinite() &&
-        message_orientation.squaredNorm() > 1.0e-8F) {
-        orientation_ = message_orientation.normalized();
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    imu_received_ = imu_valid;
+    if (orientation_valid) {
         orientation_received_ = true;
     }
 
-    publish_current_state_locked();
+    const bool next_state_valid = imu_received_ && orientation_received_;
+    lock_memory();
+    angular_velocity = next_angular_velocity;
+    acceleration = next_acceleration;
+    if (orientation_valid) {
+        orientation = message_orientation.normalized();
+    }
+    state_valid_ = next_state_valid;
+    unlock_memory();
+    ready_.store(next_state_valid, std::memory_order_release);
 }
 
 void VirIMU::pose_callback(const geometry_msgs::msg::PoseStamped& msg)
@@ -88,16 +97,13 @@ void VirIMU::pose_callback(const geometry_msgs::msg::PoseStamped& msg)
     }
 
     std::lock_guard<std::mutex> lock(state_mutex_);
-    orientation_ = pose_orientation;
     orientation_received_ = true;
-    publish_current_state_locked();
-}
-
-void VirIMU::publish_current_state_locked()
-{
-    publish_state(orientation_, angular_velocity_, acceleration_);
-    ready_.store(imu_received_ && orientation_received_,
-                 std::memory_order_release);
+    const bool next_state_valid = imu_received_ && orientation_received_;
+    lock_memory();
+    orientation = pose_orientation;
+    state_valid_ = next_state_valid;
+    unlock_memory();
+    ready_.store(next_state_valid, std::memory_order_release);
 }
 
 bool VirIMU::quaternion_from_msg(const geometry_msgs::msg::Quaternion& msg,
