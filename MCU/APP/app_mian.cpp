@@ -20,8 +20,7 @@ void ControlTask(void* param);
 
 //app_main负责初始化
 Motor* lf_motor, *lb_motor, *rf_motor, *rb_motor,*lw_motor,*rw_motor;
-ControllerBase<10, 6>* lqr_vmc_controller;
-EstimaterBase<10, 10>* robot_estimater;
+Controller* controller;
 
 void app_main(void) {
     bsp::hardware::init();
