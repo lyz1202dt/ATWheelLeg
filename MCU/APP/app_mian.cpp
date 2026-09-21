@@ -75,12 +75,9 @@ void TestTask(void* param) {
 
 void IMUTask(void* param) {
     (void)param;
-    Eigen::Quaternionf q         = Eigen::Quaternionf::Identity();
-    Eigen::Vector3d angular      = Eigen::Vector3d::Zero();
-    Eigen::Vector3d acceleration = Eigen::Vector3d::Zero();
     TickType_t last_wake_time = xTaskGetTickCount();
     for (;;) {
-        (void)imu->update(q, angular, acceleration, 0.001F);
+        (void)imu->update(0.001F);
         vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(1));
     }
 }

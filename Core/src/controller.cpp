@@ -126,7 +126,14 @@ bool Controller::update(float dt)
     Eigen::Quaternionf orientation = Eigen::Quaternionf::Identity();
     Eigen::Vector3d angular_velocity = Eigen::Vector3d::Zero();
     Eigen::Vector3d acceleration = Eigen::Vector3d::Zero();
-    if (!imu->read_state(orientation, angular_velocity, acceleration)) {
+    bool imu_state_valid = false;
+    imu->lock_memory();
+    orientation = imu->orientation;
+    angular_velocity = imu->angular_velocity;
+    acceleration = imu->acceleration;
+    imu_state_valid = imu->state_valid_;
+    imu->unlock_memory();
+    if (!imu_state_valid) {
         set_safe_commands();
         return false;
     }
