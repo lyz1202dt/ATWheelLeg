@@ -31,6 +31,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 project(${CMAKE_PROJECT_NAME} C CXX ASM)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
+# Build the platform-independent controller as part of the MCU image.
+set(CORE_BUILD_TESTS OFF CACHE BOOL "Disable Core host tests in the MCU build" FORCE)
+add_subdirectory(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Core
+    ${CMAKE_CURRENT_BINARY_DIR}/core
+)
+
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
@@ -104,6 +111,7 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 # Add linked libraries
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
+    Core::core
     arm_cortexM7lfsp_math
 
     # Add user defined libraries

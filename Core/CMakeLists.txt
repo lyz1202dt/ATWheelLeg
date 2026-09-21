@@ -34,11 +34,27 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# autodiff dependency
+#   autodiff is header-only, but its interface target provides the include
+#   path and C++17 requirement used by LegCalc.
+# ---------------------------------------------------------------------------
+if(NOT TARGET autodiff::autodiff)
+    set(AUTODIFF_BUILD_PYTHON OFF CACHE BOOL "Disable autodiff Python bindings" FORCE)
+    set(AUTODIFF_BUILD_EXAMPLES OFF CACHE BOOL "Disable autodiff examples" FORCE)
+    set(AUTODIFF_BUILD_DOCS OFF CACHE BOOL "Disable autodiff docs" FORCE)
+    add_subdirectory(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/autodiff"
+        "${CMAKE_CURRENT_BINARY_DIR}/autodiff"
+        EXCLUDE_FROM_ALL
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # Core library
 # ---------------------------------------------------------------------------
 add_library(core
-    src/wheel_leg_ekf.cpp
-    src/wheel_leg_lqr_controller.cpp
+    src/controller.cpp
+    src/tools/leg_calc.cpp
 )
 add_library(Core::core ALIAS core)
 
@@ -47,7 +63,7 @@ target_include_directories(core PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(core PUBLIC Eigen3::Eigen)
+target_link_libraries(core PUBLIC Eigen3::Eigen autodiff::autodiff)
 
 # Allow the static library to be linked into shared libraries later.
 set_target_properties(core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -56,15 +72,25 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(core PRIVATE -Wall -Wextra)
 endif()
 
+# The STM32 Debug configuration otherwise emits the Eigen Hamiltonian solver
+# at -O0, which exceeds the device flash size. Keep symbols available while
+# using size optimization for this platform-independent library.
+if(CMAKE_SYSTEM_NAME STREQUAL "Generic")
+    target_compile_options(core PRIVATE -Os)
+endif()
+
 # ---------------------------------------------------------------------------
 # Test application
 # ---------------------------------------------------------------------------
-enable_testing()
+option(CORE_BUILD_TESTS "Build the Core test application" ON)
+if(CORE_BUILD_TESTS)
+    enable_testing()
 
-add_executable(core_test src/test.cpp)
-target_link_libraries(core_test PRIVATE core)
+    add_executable(core_test src/test.cpp)
+    target_link_libraries(core_test PRIVATE core)
 
-add_test(NAME core_test COMMAND core_test)
+    add_test(NAME core_test COMMAND core_test)
+endif()
 
 # ---------------------------------------------------------------------------
 # Install & export (so downstream projects can use find_package(Core))
@@ -104,4 +130,3 @@ install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/CoreConfigVersion.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Core
 )
-
