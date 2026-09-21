@@ -1,0 +1,8 @@
+<library path="mpc_controller">
+  <class
+    name="mpc_controller/MPCController"
+    type="mpc_controller::MPCController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>High-level balance car MPC controller plugin.</description>
+  </class>
+</library>

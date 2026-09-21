@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Eigen is a public dependency of the Core library (headers include <Eigen/...>).
+find_dependency(Eigen3)
+
+include("${CMAKE_CURRENT_LIST_DIR}/CoreTargets.cmake")
+
+check_required_components(Core)

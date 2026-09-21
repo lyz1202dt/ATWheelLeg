@@ -1,0 +1,25 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500
+
+    mujoco_sim_controller:
+      type: lqr_controller/MujocoSimController
+
+    lqr_controller:
+      type: lqr_controller/LQRController
+
+mujoco_sim_controller:
+  ros__parameters:
+    use_sim_time: true
+    effort_limit: 20.0
+
+lqr_controller:
+  ros__parameters:
+    use_sim_time: true
+    imu_topic: /imu_imu_sensor/imu
+    leg_angle_diff_kp: 30.0
+    leg_angle_diff_kd: 1.5
+    wheel_diff_kp: 10.0
+    wheel_diff_ki: 3.0
+    q_diag: [0.3, 3.0, 100.0, 40.0, 600.0, 50.0]
+    r_diag: [4.0, 0.5]

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>autodiff</name>
+  <version>1.1.2</version>
+  <description>Automatic differentiation C++17 header-only library.</description>
+  <maintainer email="cloud1202@qq.com">lyz</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>cmake</buildtool_depend>
+  <build_depend>libeigen3-dev</build_depend>
+  <exec_depend>libeigen3-dev</exec_depend>
+
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>

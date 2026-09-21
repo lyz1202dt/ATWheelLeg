@@ -1,0 +1,22 @@
+<library path="lqr_controller">
+  <class
+    name="lqr_controller/LQRController"
+    type="lqr_controller::LQRController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>High-level balance car LQR/VMC controller skeleton.</description>
+  </class>
+
+  <class
+    name="lqr_controller/MujocoSimController"
+    type="lqr_controller::MujocoSimController"
+    base_class_type="controller_interface::ChainableControllerInterface">
+    <description>MuJoCo middle-layer chain controller with PD motor target interfaces.</description>
+  </class>
+
+  <class
+    name="lqr_controller/RealHardware"
+    type="lqr_controller::RealHardware"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>Real hardware interface skeleton for motor state and target interfaces.</description>
+  </class>
+</library>

@@ -1,0 +1,422 @@
+<?xml version="1.0"?>
+<robot name="five_bar_wheel_leg_balance_car">
+    <material name="body_mat">
+        <color rgba="0.56 0.55 0.41 1.0" />
+    </material>
+    <material name="link_teal">
+        <color rgba="0.0 0.42 0.42 1.0" />
+    </material>
+    <material name="link_dark">
+        <color rgba="0.25 0.27 0.26 1.0" />
+    </material>
+    <material name="wheel_mat">
+        <color rgba="0.0 0.36 0.35 1.0" />
+    </material>
+    <material name="metal_mat">
+        <color rgba="0.72 0.72 0.70 1.0" />
+    </material>
+
+    <link name="world" />
+
+    <joint name="floating_base" type="floating">
+        <parent link="world" />
+        <child link="base_link" />
+        <origin xyz="0 0 0" rpy="0 0 0" />
+    </joint>
+
+    <link name="base_link">
+        <inertial>
+            <origin xyz="0 0 0.1265" rpy="0 0 0" />
+            <mass value="2.30" />
+            <inertia ixx="0.0423" ixy="0.0" ixz="0.0" iyy="0.0447" iyz="0.0" izz="0.0406" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0.06" rpy="0 0 0" />
+            <geometry>
+                <box size="0.38 0.36 0.12" />
+            </geometry>
+            <material name="body_mat" />
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.06" rpy="0 0 0" />
+            <geometry>
+                <box size="0.38 0.36 0.12" />
+            </geometry>
+        </collision>
+        <visual>
+            <origin xyz="0 0 0.24" rpy="0 0 0" />
+            <geometry>
+                <box size="0.24 0.22 0.24" />
+            </geometry>
+            <material name="body_mat" />
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.24" rpy="0 0 0" />
+            <geometry>
+                <box size="0.24 0.22 0.24" />
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- Left five-bar wheel leg, link plane y=0.17, wheel center y=0.23. -->
+    <link name="left_front_upper_link">
+        <inertial>
+            <origin xyz="0.0922 0 0" rpy="0 0 0" />
+            <mass value="0.09" />
+            <inertia ixx="0.00012" ixy="0.0" ixz="0.0" iyy="0.00029" iyz="0.0" izz="0.00022" />
+        </inertial>
+        <visual>
+            <origin xyz="0.0922 0 0" rpy="0 1.5704 0" />
+            <geometry>
+                <cylinder radius="0.012" length="0.1844" />
+            </geometry>
+            <material name="link_teal" />
+        </visual>
+        <collision>
+            <origin xyz="0.0922 0 0" rpy="0 1.5704 0" />
+            <geometry>
+                <cylinder radius="0.012" length="0.1844" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="left_front_hip_joint" type="revolute">
+        <parent link="base_link" />
+        <child link="left_front_upper_link" />
+        <origin xyz="0.11 0.17 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="0.1" upper="1.8" effort="18" velocity="10" />
+        <dynamics damping="0.04" friction="0.01" />
+    </joint>
+
+    <link name="left_front_lower_link">
+        <inertial>
+            <origin xyz="0.1565 0 0" rpy="0 0 0" />
+            <mass value="0.12" />
+            <inertia ixx="0.00018" ixy="0.0" ixz="0.0" iyy="0.00108" iyz="0.0" izz="0.00094" />
+        </inertial>
+        <visual>
+            <origin xyz="0.1565 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <cylinder radius="0.011" length="0.3130" />
+            </geometry>
+            <material name="link_dark" />
+        </visual>
+        <collision>
+            <origin xyz="0.1565 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <cylinder radius="0.011" length="0.3130" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="left_front_knee_joint" type="revolute">
+        <parent link="left_front_upper_link" />
+        <child link="left_front_lower_link" />
+        <origin xyz="0.1844 0 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="0" upper="3.14159" effort="3" velocity="12" />
+        <dynamics damping="0.02" friction="0.004" />
+    </joint>
+
+    <link name="left_rear_upper_link">
+        <inertial>
+            <origin xyz="0.0922 0 0" rpy="0 0 0" />
+            <mass value="0.09" />
+            <inertia ixx="0.00012" ixy="0.0" ixz="0.0" iyy="0.00029" iyz="0.0" izz="0.00022" />
+        </inertial>
+        <visual>
+            <origin xyz="0.0922 0 0" rpy="0 1.5704 0" />
+            <geometry>
+                <cylinder radius="0.012" length="0.1844" />
+            </geometry>
+            <material name="link_teal" />
+        </visual>
+        <collision>
+            <origin xyz="0.0922 0 0" rpy="0 1.5704 0" />
+            <geometry>
+                <cylinder radius="0.012" length="0.1844" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="left_rear_hip_joint" type="revolute">
+        <parent link="base_link" />
+        <child link="left_rear_upper_link" />
+        <origin xyz="-0.11 0.17 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="1.34159" upper="3.041592" effort="18" velocity="10" />
+        <dynamics damping="0.04" friction="0.01" />
+    </joint>
+
+    <link name="left_rear_lower_link">
+        <inertial>
+            <origin xyz="0.1565 0 0" rpy="0 0 0" />
+            <mass value="0.12" />
+            <inertia ixx="0.00018" ixy="0.0" ixz="0.0" iyy="0.00108" iyz="0.0" izz="0.00094" />
+        </inertial>
+        <visual>
+            <origin xyz="0.1565 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <cylinder radius="0.011" length="0.3130" />
+            </geometry>
+            <material name="link_dark" />
+        </visual>
+        <collision>
+            <origin xyz="0.1565 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <cylinder radius="0.011" length="0.3130" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="left_rear_knee_joint" type="revolute">
+        <parent link="left_rear_upper_link" />
+        <child link="left_rear_lower_link" />
+        <origin xyz="0.1844 0 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="-3.14159" upper="0" effort="3" velocity="12" />
+        <dynamics damping="0.02" friction="0.004" />
+    </joint>
+
+    <link name="left_wheel_carrier">
+        <inertial>
+            <origin xyz="0 0.03 0" rpy="0 0 0" />
+            <mass value="0.09" />
+            <inertia ixx="0.00008" ixy="0.0" ixz="0.0" iyy="0.00004" iyz="0.0" izz="0.00008" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0.03 0" rpy="1.5708 0 0" />
+            <geometry>
+                <cylinder radius="0.025" length="0.12" />
+            </geometry>
+            <material name="metal_mat" />
+        </visual>
+        <collision>
+            <origin xyz="0 0.03 0" rpy="1.5708 0 0" />
+            <geometry>
+                <cylinder radius="0.025" length="0.12" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="left_rear_ankle_joint" type="revolute">
+        <parent link="left_rear_lower_link" />
+        <child link="left_wheel_carrier" />
+        <origin xyz="0.3130 0 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="-2.80" upper="2.80" effort="3" velocity="12" />
+        <dynamics damping="0.02" friction="0.004" />
+    </joint>
+
+    <link name="left_wheel">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <mass value="0.32" />
+            <inertia ixx="0.00102" ixy="0.0" ixz="0.0" iyy="0.00102" iyz="0.0" izz="0.00160" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="1.5708 0 0" />
+            <geometry>
+                <cylinder radius="0.10" length="0.055" />
+            </geometry>
+            <material name="wheel_mat" />
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="1.5708 0 0" />
+            <geometry>
+                <cylinder radius="0.10" length="0.055" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="left_wheel_joint" type="continuous">
+        <parent link="left_wheel_carrier" />
+        <child link="left_wheel" />
+        <origin xyz="0 0.06 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit effort="16" velocity="45" />
+        <dynamics damping="0.01" friction="0.004" />
+    </joint>
+
+    <!-- Right five-bar wheel leg, mirrored about the x-z plane. -->
+    <link name="right_front_upper_link">
+        <inertial>
+            <origin xyz="0.0922 0 0" rpy="0 0 0" />
+            <mass value="0.09" />
+            <inertia ixx="0.00012" ixy="0.0" ixz="0.0" iyy="0.00029" iyz="0.0" izz="0.00022" />
+        </inertial>
+        <visual>
+            <origin xyz="0.0922 0 0" rpy="0 1.5704 0" />
+            <geometry>
+                <cylinder radius="0.012" length="0.1844" />
+            </geometry>
+            <material name="link_teal" />
+        </visual>
+        <collision>
+            <origin xyz="0.0922 0 0" rpy="0 1.5704 0" />
+            <geometry>
+                <cylinder radius="0.012" length="0.1844" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="right_front_hip_joint" type="revolute">
+        <parent link="base_link" />
+        <child link="right_front_upper_link" />
+        <origin xyz="0.11 -0.17 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="0.1" upper="1.8" effort="18" velocity="10" />
+        <dynamics damping="0.04" friction="0.01" />
+    </joint>
+
+    <link name="right_front_lower_link">
+        <inertial>
+            <origin xyz="0.1565 0 0" rpy="0 0 0" />
+            <mass value="0.12" />
+            <inertia ixx="0.00018" ixy="0.0" ixz="0.0" iyy="0.00108" iyz="0.0" izz="0.00094" />
+        </inertial>
+        <visual>
+            <origin xyz="0.1565 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <cylinder radius="0.011" length="0.3130" />
+            </geometry>
+            <material name="link_dark" />
+        </visual>
+        <collision>
+            <origin xyz="0.1565 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <cylinder radius="0.011" length="0.3130" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="right_front_knee_joint" type="revolute">
+        <parent link="right_front_upper_link" />
+        <child link="right_front_lower_link" />
+        <origin xyz="0.1844 0 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="0" upper="3.14159" effort="3" velocity="12" />
+        <dynamics damping="0.02" friction="0.004" />
+    </joint>
+
+    <link name="right_rear_upper_link">
+        <inertial>
+            <origin xyz="0.0922 0 0" rpy="0 0 0" />
+            <mass value="0.09" />
+            <inertia ixx="0.00012" ixy="0.0" ixz="0.0" iyy="0.00029" iyz="0.0" izz="0.00022" />
+        </inertial>
+        <visual>
+            <origin xyz="0.0922 0 0" rpy="0 1.5704 0" />
+            <geometry>
+                <cylinder radius="0.012" length="0.1844" />
+            </geometry>
+            <material name="link_teal" />
+        </visual>
+        <collision>
+            <origin xyz="0.0922 0 0" rpy="0 1.5704 0" />
+            <geometry>
+                <cylinder radius="0.012" length="0.1844" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="right_rear_hip_joint" type="revolute">
+        <parent link="base_link" />
+        <child link="right_rear_upper_link" />
+        <origin xyz="-0.11 -0.17 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="1.34159" upper="3.041592" effort="18" velocity="10" />
+        <dynamics damping="0.04" friction="0.01" />
+    </joint>
+
+    <link name="right_rear_lower_link">
+        <inertial>
+            <origin xyz="0.1565 0 0" rpy="0 0 0" />
+            <mass value="0.12" />
+            <inertia ixx="0.00018" ixy="0.0" ixz="0.0" iyy="0.00108" iyz="0.0" izz="0.00094" />
+        </inertial>
+        <visual>
+            <origin xyz="0.1565 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <cylinder radius="0.011" length="0.3130" />
+            </geometry>
+            <material name="link_dark" />
+        </visual>
+        <collision>
+            <origin xyz="0.1565 0 0" rpy="0 -1.57 0" />
+            <geometry>
+                <cylinder radius="0.011" length="0.3130" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="right_rear_knee_joint" type="revolute">
+        <parent link="right_rear_upper_link" />
+        <child link="right_rear_lower_link" />
+        <origin xyz="0.1844 0 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="-3.14159" upper="0" effort="3" velocity="12" />
+        <dynamics damping="0.02" friction="0.004" />
+    </joint>
+
+    <link name="right_wheel_carrier">
+        <inertial>
+            <origin xyz="0 -0.03 0" rpy="0 0 0" />
+            <mass value="0.09" />
+            <inertia ixx="0.00008" ixy="0.0" ixz="0.0" iyy="0.00004" iyz="0.0" izz="0.00008" />
+        </inertial>
+        <visual>
+            <origin xyz="0 -0.03 0" rpy="1.5708 0 0" />
+            <geometry>
+                <cylinder radius="0.025" length="0.12" />
+            </geometry>
+            <material name="metal_mat" />
+        </visual>
+        <collision>
+            <origin xyz="0 -0.03 0" rpy="1.5708 0 0" />
+            <geometry>
+                <cylinder radius="0.025" length="0.12" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="right_rear_ankle_joint" type="revolute">
+        <parent link="right_rear_lower_link" />
+        <child link="right_wheel_carrier" />
+        <origin xyz="0.3130 0 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit lower="-2.80" upper="2.80" effort="3" velocity="12" />
+        <dynamics damping="0.02" friction="0.004" />
+    </joint>
+
+    <link name="right_wheel">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <mass value="0.32" />
+            <inertia ixx="0.00102" ixy="0.0" ixz="0.0" iyy="0.00102" iyz="0.0" izz="0.00160" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="1.5708 0 0" />
+            <geometry>
+                <cylinder radius="0.10" length="0.055" />
+            </geometry>
+            <material name="wheel_mat" />
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="1.5708 0 0" />
+            <geometry>
+                <cylinder radius="0.10" length="0.055" />
+            </geometry>
+        </collision>
+    </link>
+
+    <joint name="right_wheel_joint" type="continuous">
+        <parent link="right_wheel_carrier" />
+        <child link="right_wheel" />
+        <origin xyz="0 -0.06 0" rpy="0 0 0" />
+        <axis xyz="0 1 0" />
+        <limit effort="16" velocity="45" />
+        <dynamics damping="0.01" friction="0.004" />
+    </joint>
+</robot>

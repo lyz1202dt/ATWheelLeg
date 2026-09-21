@@ -1,0 +1,8 @@
+.vscode/
+.cache/
+MCU/build/
+Core/build/
+MujocoSim/build
+MujocoSim/install
+MujocoSim/log
+
