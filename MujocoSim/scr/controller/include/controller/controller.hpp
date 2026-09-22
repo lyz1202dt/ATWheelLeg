@@ -11,9 +11,11 @@
 #include <atomic>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/node_interfaces/node_parameters_interface.hpp>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include <controllerbase.hpp>
 #include <controller.hpp>
 
 #include "controller/vir_imu.hpp"
@@ -60,7 +62,8 @@ private:
     VirMotor rb_motor_;
     VirMotor lw_motor_;
     VirMotor rw_motor_;
-    ::Controller controller_;
+    std::unique_ptr<::Controller> lqr_controller_;
+    ControllerBase* controller_ = nullptr;
 
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_subscriber_;
 

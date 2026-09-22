@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -87,15 +88,16 @@ bool numeric_array_parameter(const rclcpp::Parameter& parameter,
 }  // namespace
 
 LQRController::LQRController()
-    : controller_(
-          &imu_,
-          &lf_motor_,
-          &rf_motor_,
-          &lb_motor_,
-          &rb_motor_,
-          &lw_motor_,
-          &rw_motor_)
 {
+    lqr_controller_ = std::make_unique<::Controller>(
+        &imu_,
+        &lf_motor_,
+        &rf_motor_,
+        &lb_motor_,
+        &rb_motor_,
+        &lw_motor_,
+        &rw_motor_);
+    controller_ = lqr_controller_.get();
 }
 
 controller_interface::CallbackReturn LQRController::on_init()
@@ -255,12 +257,16 @@ controller_interface::return_type LQRController::update(
         return controller_interface::return_type::ERROR;
     }
 
-    controller_.input(
+    if (controller_ == nullptr) {
+        return controller_interface::return_type::ERROR;
+    }
+
+    controller_->input(
         expected_velocity_.load(std::memory_order_relaxed),
         expected_omega_.load(std::memory_order_relaxed),
         static_cast<float>(controller_params_.leg_exp_length),
         requested_mode_);
-    (void)controller_.update(static_cast<float>(period.seconds()));
+    (void)controller_->update(static_cast<float>(period.seconds()));
     return controller_interface::return_type::OK;
 }
 
@@ -347,7 +353,12 @@ bool LQRController::bind_motor_interfaces()
 
 bool LQRController::configure_controller(std::string& error)
 {
-    if (!controller_.set_params(controller_params_)) {
+    if (lqr_controller_ == nullptr) {
+        error = "LQR controller is not initialized";
+        return false;
+    }
+
+    if (!lqr_controller_->set_params(controller_params_)) {
         error = "invalid controller parameters";
         return false;
     }
@@ -360,19 +371,19 @@ bool LQRController::configure_controller(std::string& error)
             get_node()->get_parameter("r_diag"), r_diag, error)) {
         return false;
     }
-    if (!controller_.update_lqr_gain(q_diag, r_diag, error)) {
+    if (!lqr_controller_->update_lqr_gain(q_diag, r_diag, error)) {
         return false;
     }
     if (use_k_tab_ &&
-        !controller_.set_gain_table(gain_lengths_, gain_values_, error)) {
+        !lqr_controller_->set_gain_table(gain_lengths_, gain_values_, error)) {
         return false;
     }
     if (!use_k_tab_ &&
         (!gain_lengths_.empty() || !gain_values_.empty()) &&
-        !controller_.set_gain_table(gain_lengths_, gain_values_, error)) {
+        !lqr_controller_->set_gain_table(gain_lengths_, gain_values_, error)) {
         return false;
     }
-    controller_.use_k_tab(use_k_tab_);
+    lqr_controller_->use_k_tab(use_k_tab_);
 
     q_diag_ = q_diag;
     r_diag_ = r_diag;
@@ -455,7 +466,8 @@ rcl_interfaces::msg::SetParametersResult LQRController::on_set_parameters(
     }
 
     if (lqr_weights_changed &&
-        !controller_.update_lqr_gain(q_diag, r_diag, error)) {
+        (lqr_controller_ == nullptr ||
+         !lqr_controller_->update_lqr_gain(q_diag, r_diag, error))) {
         result.successful = false;
         result.reason = error;
         RCLCPP_ERROR(
@@ -465,7 +477,8 @@ rcl_interfaces::msg::SetParametersResult LQRController::on_set_parameters(
     }
 
     if ((gain_table_changed || use_k_tab) &&
-        !controller_.set_gain_table(gain_lengths, gain_values, error)) {
+        (lqr_controller_ == nullptr ||
+         !lqr_controller_->set_gain_table(gain_lengths, gain_values, error))) {
         result.successful = false;
         result.reason = error;
         RCLCPP_ERROR(
@@ -475,7 +488,12 @@ rcl_interfaces::msg::SetParametersResult LQRController::on_set_parameters(
     }
 
     if (use_k_tab_changed) {
-        controller_.use_k_tab(use_k_tab);
+        if (lqr_controller_ == nullptr) {
+            result.successful = false;
+            result.reason = "LQR controller is not initialized";
+            return result;
+        }
+        lqr_controller_->use_k_tab(use_k_tab);
     }
 
     if (lqr_weights_changed || gain_table_changed || use_k_tab_changed) {
