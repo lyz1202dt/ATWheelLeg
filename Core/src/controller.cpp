@@ -5,22 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-
-namespace {
-
-constexpr double kPi                    = 3.14159265358979323846;
-constexpr double kStateSwitchDelay      = 0.3;
-constexpr double kPitchLimit            = 0.3;
-constexpr double kContactForceThreshold = 8.0;
-constexpr double kHipTorqueLimit        = 12.0;
-constexpr double kWheelTorqueLimit      = 2.0;
-
-using StateVector = Eigen::Matrix<double, 6, 1>;
-
-constexpr LqrStateWeight kDefaultLqrQDiag = {1.0, 1.0, 10.0, 1.0, 1.0, 1.0};
-constexpr LqrInputWeight kDefaultLqrRDiag = {1.0, 1.0};
-
-} // namespace
+#include <iterator>
 
 Controller::Controller(IMUBase* imu_in, Motor* lf_in, Motor* rf_in, Motor* lb_in, Motor* rb_in, Motor* lw_in, Motor* rw_in)
     : ControllerBase(imu_in, lf_in, rf_in, lb_in, rb_in, lw_in, rw_in)
@@ -87,18 +72,18 @@ Eigen::Vector2d Controller::lqr_control() const { return lqr_control_; }
 
 bool Controller::update(float dt) {
     if (!std::isfinite(dt) || dt <= 0.0F) {
-        dt = 0.001F;
+        dt = static_cast<float>(kDefaultDt);
     }
 
-    if (imu == nullptr || !imu->is_ready()) {
+    if (imu == nullptr || !imu->is_ready() || lf == nullptr || rf == nullptr || lb == nullptr || rb == nullptr || lw == nullptr || rw == nullptr) {
         set_safe_commands();
         return false;
     }
 
-    Eigen::Quaternionf orientation   = Eigen::Quaternionf::Identity();
-    Eigen::Vector3d angular_velocity = Eigen::Vector3d::Zero();
-    Eigen::Vector3d acceleration     = Eigen::Vector3d::Zero();
-    bool imu_state_valid             = false;
+    Eigen::Quaternionf orientation;
+    Eigen::Vector3d angular_velocity;
+    Eigen::Vector3d acceleration;
+    bool imu_state_valid;
     imu->lock_memory();
     orientation      = imu->orientation;
     angular_velocity = imu->angular_velocity;
@@ -112,24 +97,21 @@ bool Controller::update(float dt) {
 
     LegState left_leg;
     LegState right_leg;
-    if (!read_leg_state(lf, lb, left_leg) || !read_leg_state(rf, rb, right_leg) || lw == nullptr || rw == nullptr) {
+    if (!read_leg_state(lf, lb, left_leg) || !read_leg_state(rf, rb, right_leg)) {
         set_safe_commands();
         return false;
     }
 
-    double yaw   = 0.0;
-    double pitch = 0.0;
-    double roll  = 0.0;
-    if (!orientation_yaw_pitch_roll(orientation, yaw, pitch, roll)) {
+    Eigen::Quaterniond normalized_orientation;
+    double yaw;
+    double pitch;
+    double roll;
+    if (!orientation_yaw_pitch_roll(orientation, normalized_orientation, yaw, pitch, roll)) {
         set_safe_commands();
         return false;
     }
 
-    const Eigen::Matrix3d body_to_world = Eigen::Quaterniond(
-                                              static_cast<double>(orientation.w()), static_cast<double>(orientation.x()),
-                                              static_cast<double>(orientation.y()), static_cast<double>(orientation.z()))
-                                              .normalized()
-                                              .toRotationMatrix();
+    const Eigen::Matrix3d body_to_world   = normalized_orientation.toRotationMatrix();
     const Eigen::Matrix3d level_to_world     = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
     const Eigen::Vector3d level_acceleration = level_to_world.transpose() * body_to_world * acceleration;
     const double lateral_acceleration        = low_pass_filter(
@@ -222,45 +204,119 @@ bool Controller::update(float dt) {
     const double leg_angle_sync_torque    = -params_.leg_angle_diff_kp * leg_angle_difference
                                        - params_.leg_angle_diff_kd * leg_angle_difference_velocity + spin_compensation_torque;
 
-    const double left_leg_angle_torque  = lqr_control_[1] + leg_angle_sync_torque;
-    const double right_leg_angle_torque = lqr_control_[1] - leg_angle_sync_torque;
     const double left_wheel_torque      = lqr_control_[0] - spin_control_torque_difference;
     const double right_wheel_torque     = lqr_control_[0] + spin_control_torque_difference;
 
+    if (state_ == State::Recovery) {
+        return send_recovery_commands();
+    }
+
+    const bool vmc_test = state_ == State::VmcTest;
+    const double left_leg_angle_torque =
+        vmc_test ? leg_angle_sync_torque : lqr_control_[1] + leg_angle_sync_torque;
+    const double right_leg_angle_torque =
+        vmc_test ? -leg_angle_sync_torque : lqr_control_[1] - leg_angle_sync_torque;
+
     Eigen::Vector2d left_joint_torque  = Eigen::Vector2d::Zero();
     Eigen::Vector2d right_joint_torque = Eigen::Vector2d::Zero();
-    if (!leg_.inverse_dynamics(left_leg.joint_position, Eigen::Vector2d(left_leg_length_torque, left_leg_angle_torque), left_joint_torque)
-        || !leg_.inverse_dynamics(
-            right_leg.joint_position, Eigen::Vector2d(right_leg_length_torque, right_leg_angle_torque), right_joint_torque)) {
+    if (!leg_.inverse_dynamics(left_leg.joint_position,
+                               Eigen::Vector2d(left_leg_length_torque, left_leg_angle_torque),
+                               left_joint_torque)
+        || !leg_.inverse_dynamics(right_leg.joint_position,
+                                  Eigen::Vector2d(right_leg_length_torque, right_leg_angle_torque),
+                                  right_joint_torque)) {
         set_safe_commands();
         return false;
     }
 
-    if (state_ == State::Recovery) {
-        Eigen::Vector2d recovery_joint_position;
-        if (!leg_.inverse_kinematics(Eigen::Vector2d(0.27, 0.0), recovery_joint_position)) {
-            set_safe_commands();
-            return false;
-        }
-        const bool left_front_ok  = lf->set_command(static_cast<float>(recovery_joint_position[0]), 0.0F, 0.0F, 50.0F, 2.0F);
-        const bool right_front_ok = rf->set_command(static_cast<float>(recovery_joint_position[0]), 0.0F, 0.0F, 50.0F, 2.0F);
-        const bool left_rear_ok   = lb->set_command(static_cast<float>(recovery_joint_position[1]), 0.0F, 0.0F, 50.0F, 2.0F);
-        const bool right_rear_ok  = rb->set_command(static_cast<float>(recovery_joint_position[1]), 0.0F, 0.0F, 50.0F, 2.0F);
-        const bool left_wheel_ok  = lw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
-        const bool right_wheel_ok = rw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
-        return left_front_ok && right_front_ok && left_rear_ok && right_rear_ok && left_wheel_ok && right_wheel_ok;
+    return send_torque_commands(left_joint_torque,
+                                right_joint_torque,
+                                left_wheel_torque,
+                                right_wheel_torque);
+}
+
+double Controller::normalize_angle(double angle) {
+    const double wrapped_angle = std::fmod(angle, 2.0 * kPi);
+    if (wrapped_angle > kPi) {
+        return wrapped_angle - 2.0 * kPi;
+    }
+    if (wrapped_angle < -kPi) {
+        return wrapped_angle + 2.0 * kPi;
+    }
+    return wrapped_angle;
+}
+
+bool Controller::orientation_yaw_pitch_roll(const Eigen::Quaternionf& orientation,
+                                            Eigen::Quaterniond& normalized_orientation,
+                                            double& yaw,
+                                            double& pitch,
+                                            double& roll) {
+    normalized_orientation = Eigen::Quaterniond(
+        static_cast<double>(orientation.w()), static_cast<double>(orientation.x()), static_cast<double>(orientation.y()),
+        static_cast<double>(orientation.z()));
+    const double norm = normalized_orientation.norm();
+    if (!std::isfinite(norm) || norm < 1.0e-9) {
+        return false;
+    }
+    normalized_orientation.normalize();
+    const Eigen::Vector3d ypr = normalized_orientation.toRotationMatrix().eulerAngles(2, 1, 0);
+    yaw                       = ypr[0];
+    pitch                     = ypr[1];
+    roll                      = ypr[2];
+    return std::isfinite(yaw) && std::isfinite(pitch) && std::isfinite(roll);
+}
+
+double Controller::low_pass_filter(double input, double alpha, double& filtered_value, bool& initialized) {
+    if (!initialized) {
+        filtered_value = input;
+        initialized    = true;
+        return filtered_value;
     }
 
-    if (state_ == State::VmcTest) {
-        if (!leg_.inverse_dynamics(
-                left_leg.joint_position, Eigen::Vector2d(left_leg_length_torque, leg_angle_sync_torque), left_joint_torque)
-            || !leg_.inverse_dynamics(
-                right_leg.joint_position, Eigen::Vector2d(right_leg_length_torque, -leg_angle_sync_torque), right_joint_torque)) {
-            set_safe_commands();
-            return false;
-        }
+    filtered_value = (1.0 - alpha) * filtered_value + alpha * input;
+    return filtered_value;
+}
+
+double Controller::clamp_torque(double torque, double limit) {
+    if (!std::isfinite(torque)) {
+        return 0.0;
+    }
+    return std::clamp(torque, -limit, limit);
+}
+
+bool Controller::read_leg_state(Motor* front_hip, Motor* rear_hip, LegState& leg_state) const {
+    leg_state.joint_position << front_hip->state.rad, rear_hip->state.rad;
+    leg_state.joint_velocity << front_hip->state.vel, rear_hip->state.vel;
+    const Eigen::Vector2d joint_torque(front_hip->state.toqeue, rear_hip->state.toqeue);
+    if (!leg_.forward_kinematics(leg_state.joint_position, leg_state.leg_position)
+        || !leg_.forward_velocity(leg_state.joint_position, leg_state.joint_velocity, leg_state.leg_velocity)
+        || !leg_.forward_dynamics(leg_state.joint_position, joint_torque, leg_state.leg_effort)) {
+        return false;
     }
 
+    return leg_state.leg_position.allFinite() && leg_state.leg_velocity.allFinite() && leg_state.leg_effort.allFinite();
+}
+
+bool Controller::send_recovery_commands() {
+    Eigen::Vector2d recovery_joint_position;
+    if (!leg_.inverse_kinematics(Eigen::Vector2d(0.27, 0.0), recovery_joint_position)) {
+        set_safe_commands();
+        return false;
+    }
+
+    const bool left_front_ok  = lf->set_command(static_cast<float>(recovery_joint_position[0]), 0.0F, 0.0F, 50.0F, 2.0F);
+    const bool right_front_ok = rf->set_command(static_cast<float>(recovery_joint_position[0]), 0.0F, 0.0F, 50.0F, 2.0F);
+    const bool left_rear_ok   = lb->set_command(static_cast<float>(recovery_joint_position[1]), 0.0F, 0.0F, 50.0F, 2.0F);
+    const bool right_rear_ok  = rb->set_command(static_cast<float>(recovery_joint_position[1]), 0.0F, 0.0F, 50.0F, 2.0F);
+    const bool left_wheel_ok  = lw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
+    const bool right_wheel_ok = rw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
+    return left_front_ok && right_front_ok && left_rear_ok && right_rear_ok && left_wheel_ok && right_wheel_ok;
+}
+
+bool Controller::send_torque_commands(const Eigen::Vector2d& left_joint_torque,
+                                      const Eigen::Vector2d& right_joint_torque,
+                                      double left_wheel_torque,
+                                      double right_wheel_torque) {
     const bool left_front_ok =
         lf->set_command(0.0F, 0.0F, static_cast<float>(clamp_torque(left_joint_torque[0], kHipTorqueLimit)), 0.0F, 0.0F);
     const bool left_rear_ok =
@@ -274,72 +330,6 @@ bool Controller::update(float dt) {
     const bool right_wheel_ok =
         rw->set_command(0.0F, 0.0F, static_cast<float>(clamp_torque(right_wheel_torque, kWheelTorqueLimit)), 0.0F, 0.0F);
     return left_front_ok && left_rear_ok && right_front_ok && right_rear_ok && left_wheel_ok && right_wheel_ok;
-}
-
-double Controller::normalize_angle(double angle) {
-    while (angle > kPi) {
-        angle -= 2.0 * kPi;
-    }
-    while (angle < -kPi) {
-        angle += 2.0 * kPi;
-    }
-    return angle;
-}
-
-bool Controller::orientation_yaw_pitch_roll(const Eigen::Quaternionf& orientation, double& yaw, double& pitch, double& roll) {
-    Eigen::Quaterniond quaternion(
-        static_cast<double>(orientation.w()), static_cast<double>(orientation.x()), static_cast<double>(orientation.y()),
-        static_cast<double>(orientation.z()));
-    if (!std::isfinite(quaternion.norm()) || quaternion.norm() < 1.0e-9) {
-        return false;
-    }
-    quaternion.normalize();
-    const Eigen::Vector3d ypr = quaternion.toRotationMatrix().eulerAngles(2, 1, 0);
-    yaw                       = ypr[0];
-    pitch                     = ypr[1];
-    roll                      = ypr[2];
-    return std::isfinite(yaw) && std::isfinite(pitch) && std::isfinite(roll);
-}
-
-double Controller::low_pass_filter(double input, double alpha, double& filtered_value, bool& initialized) {
-    if (!std::isfinite(input)) {
-        return initialized ? filtered_value : 0.0;
-    }
-    if (!initialized) {
-        filtered_value = input;
-        initialized    = true;
-        return filtered_value;
-    }
-
-    const double clamped_alpha = std::clamp(std::isfinite(alpha) ? alpha : 1.0, 0.0, 1.0);
-    filtered_value             = (1.0 - clamped_alpha) * filtered_value + clamped_alpha * input;
-    return filtered_value;
-}
-
-double Controller::clamp_torque(double torque, double limit) {
-    if (!std::isfinite(torque)) {
-        return 0.0;
-    }
-    return std::clamp(torque, -limit, limit);
-}
-
-bool Controller::read_leg_state(Motor* front_hip, Motor* rear_hip, LegState& leg_state) const {
-    if (front_hip == nullptr || rear_hip == nullptr) {
-        return false;
-    }
-
-    leg_state.joint_position << front_hip->state.rad, rear_hip->state.rad;
-    leg_state.joint_velocity << front_hip->state.vel, rear_hip->state.vel;
-    const Eigen::Vector2d joint_torque(front_hip->state.toqeue, rear_hip->state.toqeue);
-    if (!leg_.forward_kinematics(leg_state.joint_position, leg_state.leg_position)
-        || !leg_.forward_velocity(leg_state.joint_position, leg_state.joint_velocity, leg_state.leg_velocity)
-        || !leg_.forward_dynamics(leg_state.joint_position, joint_torque, leg_state.leg_effort)) {
-        leg_state = {};
-        return false;
-    }
-
-    leg_state.valid = true;
-    return leg_state.leg_position.allFinite() && leg_state.leg_velocity.allFinite() && leg_state.leg_effort.allFinite();
 }
 
 void Controller::set_safe_commands() {
@@ -382,3 +372,213 @@ void Controller::update_state_machine(double pitch, double left_normal_force, do
         }
     }
 }
+
+
+
+
+LqrGainScheduler::LqrGainScheduler() = default;
+
+bool LqrGainScheduler::load_table(const std::vector<double>& lengths,
+                                  const std::vector<double>& values,
+                                  std::string& error) {
+    error.clear();
+    if (lengths.empty()) {
+        error = "K.lengths must contain at least one leg length";
+        return false;
+    }
+    if (values.size() != lengths.size() * kStateSize * kInputSize) {
+        error = "K.values must contain exactly 12 values for each K.lengths entry";
+        return false;
+    }
+
+    table_.clear();
+    table_.reserve(lengths.size());
+    for (size_t entry_index = 0; entry_index < lengths.size(); ++entry_index) {
+        const double length = lengths[entry_index];
+        if (!std::isfinite(length)) {
+            error = "K.lengths contains a non-finite value";
+            table_.clear();
+            return false;
+        }
+
+        GainMatrix gain;
+        for (std::size_t row = 0; row < kInputSize; ++row) {
+            for (std::size_t column = 0; column < kStateSize; ++column) {
+                const std::size_t value_index = entry_index * kStateSize * kInputSize + row * kStateSize + column;
+                const double value       = values[value_index];
+                if (!std::isfinite(value)) {
+                    error = "K.values contains a non-finite value";
+                    table_.clear();
+                    return false;
+                }
+                gain(row, column) = value;
+            }
+        }
+        table_.emplace_back(length, gain);
+    }
+
+    std::sort(table_.begin(), table_.end(), [](const TableEntry& lhs, const TableEntry& rhs) { return lhs.first < rhs.first; });
+
+    for (size_t index = 1; index < table_.size(); ++index) {
+        if (table_[index].first <= table_[index - 1].first) {
+            error = "K.lengths entries must be unique";
+            table_.clear();
+            return false;
+        }
+    }
+
+    return update(table_.front().first);
+}
+
+bool LqrGainScheduler::update(double leg_length) {
+    if (!std::isfinite(leg_length)) {
+        return false;
+    }
+
+    if (!use_k_tab_) {
+        return true;
+    }
+
+    if (table_.empty()) {
+        return false;
+    }
+
+    if (leg_length <= table_.front().first || table_.size() == 1U) {
+        ground_gain_ = table_.front().second;
+    } else if (leg_length >= table_.back().first) {
+        ground_gain_ = table_.back().second;
+    } else {
+        const auto upper = std::lower_bound(
+            table_.begin(), table_.end(), leg_length, [](const TableEntry& entry, double length) { return entry.first < length; });
+        const auto lower   = std::prev(upper);
+        const double ratio = (leg_length - lower->first) / (upper->first - lower->first);
+        ground_gain_       = (1.0 - ratio) * lower->second + ratio * upper->second;
+    }
+
+    air_gain_.setZero();
+    air_gain_(1, 2) = ground_gain_(1, 2);
+    air_gain_(1, 3) = ground_gain_(1, 3);
+    return true;
+}
+
+bool LqrGainScheduler::empty() const { return table_.empty(); }
+
+const LqrGainScheduler::GainMatrix& LqrGainScheduler::ground_gain() const { return ground_gain_; }
+
+const LqrGainScheduler::GainMatrix& LqrGainScheduler::air_gain() const { return air_gain_; }
+
+
+bool LqrGainScheduler::solve_lqr_gain(const StateWeight& q_diag,
+                                      const InputWeight& r_diag,
+                                      std::string& error) {
+    using Matrix6d  = Eigen::Matrix<double, kStateSize, kStateSize>;
+    using Matrix62d = Eigen::Matrix<double, kStateSize, kInputSize>;
+    using Matrix2d  = Eigen::Matrix<double, kInputSize, kInputSize>;
+    using Matrix12d = Eigen::Matrix<double, 2 * kStateSize, 2 * kStateSize>;
+    using Matrix6cd = Eigen::Matrix<std::complex<double>, kStateSize, kStateSize>;
+
+    error.clear();
+
+    Matrix6d A;
+    A << 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -13.9285, 0.0, 0.6373, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 98.2488, 0.0, 17.6903,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 44.9938, 0.0, 54.3689, 0.0;
+
+    Matrix62d B;
+    B << 0.0, 0.0, 15.4595, -3.3942, 0.0, 0.0, -65.5078, 39.5039, 0.0, 0.0, -7.9383, 50.5446;
+
+    Matrix6d Q = Matrix6d::Zero();
+    for (std::size_t i = 0; i < kStateSize; ++i) {
+        if (q_diag[i] < 0.0 || !std::isfinite(q_diag[i])) {
+            error = "q_diag values must be finite and greater than or equal to 0";
+            return false;
+        }
+        Q(i, i) = q_diag[i];
+    }
+
+    Matrix2d R_inv = Matrix2d::Zero();
+    for (std::size_t i = 0; i < kInputSize; ++i) {
+        if (r_diag[i] <= 0.0 || !std::isfinite(r_diag[i])) {
+            error = "r_diag values must be finite and greater than 0";
+            return false;
+        }
+        R_inv(i, i) = 1.0 / r_diag[i];
+    }
+
+    Matrix12d H = Matrix12d::Zero();
+    H.template block<kStateSize, kStateSize>(0, 0)                 = A;
+    H.template block<kStateSize, kStateSize>(0, kStateSize)         = -B * R_inv * B.transpose();
+    H.template block<kStateSize, kStateSize>(kStateSize, 0)         = -Q;
+    H.template block<kStateSize, kStateSize>(kStateSize, kStateSize) = -A.transpose();
+
+    Eigen::ComplexEigenSolver<Matrix12d> eigen_solver(H);
+    if (eigen_solver.info() != Eigen::Success) {
+        error = "Hamiltonian eigen decomposition failed";
+        return false;
+    }
+
+    const auto eigenvalues  = eigen_solver.eigenvalues();
+    const auto eigenvectors = eigen_solver.eigenvectors();
+    std::array<int, kStateSize> stable_indices{};
+    std::size_t stable_count = 0;
+    for (int i = 0; i < eigenvalues.size(); ++i) {
+        if (eigenvalues[i].real() < -1.0e-8) {
+            if (stable_count >= stable_indices.size()) {
+                error = "Riccati Hamiltonian has too many stable eigenvalues";
+                return false;
+            }
+            stable_indices[stable_count++] = i;
+        }
+    }
+
+    if (stable_count != kStateSize) {
+        error = "Riccati Hamiltonian did not provide a 6-dimensional stable subspace";
+        return false;
+    }
+
+    Matrix6cd U1;
+    Matrix6cd U2;
+    for (std::size_t col = 0; col < kStateSize; ++col) {
+        U1.col(col) = eigenvectors.template block<kStateSize, 1>(0, stable_indices[col]);
+        U2.col(col) = eigenvectors.template block<kStateSize, 1>(kStateSize, stable_indices[col]);
+    }
+
+    const auto U1_decomposition = U1.fullPivLu();
+    if (!U1_decomposition.isInvertible()) {
+        error = "Riccati stable subspace is singular";
+        return false;
+    }
+
+    const Matrix6cd P_complex = U2 * U1.inverse();
+    const double max_imag     = P_complex.imag().cwiseAbs().maxCoeff();
+    if (max_imag > 1.0e-5) {
+        error = "Riccati solution has a significant imaginary component";
+        return false;
+    }
+
+    Matrix6d P = P_complex.real();
+    P          = 0.5 * (P + P.transpose());
+
+    const LqrGainMatrix gain = R_inv * B.transpose() * P;
+    if (!gain.allFinite()) {
+        error = "Computed LQR gain contains a non-finite value";
+        return false;
+    }
+
+    const Matrix6d residual = A.transpose() * P + P * A - P * B * R_inv * B.transpose() * P + Q;
+    const double scale      = 1.0 + Q.norm() + A.norm() * P.norm() + (P * B * R_inv * B.transpose() * P).norm();
+    if (!std::isfinite(residual.norm()) || residual.norm() > 1.0e-6 * scale) {
+        error = "Riccati residual check failed";
+        return false;
+    }
+
+    // Keep the airborne controller semantics used by LqrGainScheduler:
+    // only the pitch and pitch-rate feedback terms remain active in the air.
+    ground_gain_ = gain;
+    air_gain_.setZero();
+    air_gain_(1, 2) = gain(1, 2);
+    air_gain_(1, 3) = gain(1, 3);
+
+    return true;
+}
+
+void LqrGainScheduler::use_k_tab(bool mode) { use_k_tab_ = mode; }
