@@ -1,7 +1,7 @@
 #pragma once
 
 #include "imubase.hpp"
-#include "lqr_gain_debuger.hpp"
+#include "lqr_gain_scheduler.hpp"
 #include "motorbase.hpp"
 #include "leg_calc.hpp"
 
@@ -10,6 +10,9 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
+
+#define PRINT_CTRL_INFO 1
 
 class Controller {
 public:
@@ -41,9 +44,13 @@ public:
     void input(float velocity, float omega, float height = 0.21f, int mode = 0);
 
     bool set_params(const Params& params);
-    bool update_lqr_gain(const LqrGainDebuger::StateWeight& q_diag,
-                         const LqrGainDebuger::InputWeight& r_diag,
+    bool set_gain_table(const std::vector<double>& lengths,
+                        const std::vector<double>& values,
+                        std::string& error);
+    bool update_lqr_gain(const LqrStateWeight& q_diag,
+                         const LqrInputWeight& r_diag,
                          std::string& error);
+    void use_k_tab(bool mode);
 
     State state() const { return state_; }
     Eigen::Vector2d lqr_control() const;
@@ -94,11 +101,7 @@ private:
                               double dt);
 
     LegCalc leg_;
-    LqrGainDebuger gain_debuger_;
-    LqrGainDebuger::GainMatrix ground_k_mat_ =
-        LqrGainDebuger::GainMatrix::Zero();
-    LqrGainDebuger::GainMatrix air_k_mat_ =
-        LqrGainDebuger::GainMatrix::Zero();
+    LqrGainScheduler gain_scheduler_;
     Params params_;
     State state_ = State::Recovery;
     int requested_mode_ = 0;

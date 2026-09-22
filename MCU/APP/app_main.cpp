@@ -1,4 +1,4 @@
-#include "app_mian.hpp"
+#include "app_main.hpp"
 #include "bmi088_imu.hpp"
 #include "controller.hpp"
 #include "hardware.hpp"
@@ -91,13 +91,7 @@ void MotorTask(void* param) {
 
 void ControlTask(void* param) {
     (void)param;
-    controller->imu = imu;
-    controller->lf  = lf_motor;
-    controller->rf  = rf_motor;
-    controller->lb  = lb_motor;
-    controller->rb  = rb_motor;
-    controller->lw  = lw_motor;
-    controller->rw  = rw_motor;
+    controller_instance.use_k_tab(true);
     TickType_t last_wake_time = xTaskGetTickCount();
     for (;;) {
         (void)controller->update(0.002f);

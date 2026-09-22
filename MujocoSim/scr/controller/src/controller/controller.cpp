@@ -62,6 +62,28 @@ bool parameter_to_array(const rclcpp::Parameter& parameter,
     return true;
 }
 
+bool numeric_array_parameter(const rclcpp::Parameter& parameter,
+                             std::vector<double>& values,
+                             std::string& error)
+{
+    if (parameter.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+        values = parameter.as_double_array();
+        return true;
+    }
+    if (parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER_ARRAY) {
+        const auto integer_values = parameter.as_integer_array();
+        values.clear();
+        values.reserve(integer_values.size());
+        for (const int64_t value : integer_values) {
+            values.push_back(static_cast<double>(value));
+        }
+        return true;
+    }
+
+    error = parameter.get_name() + " must be a numeric array";
+    return false;
+}
+
 }  // namespace
 
 LQRController::LQRController()
@@ -105,10 +127,13 @@ controller_interface::CallbackReturn LQRController::on_init()
         "leg_angle_diff_kd", controller_params_.leg_angle_diff_kd);
     auto_declare<double>("wheel_diff_kp", controller_params_.wheel_diff_kp);
     auto_declare<double>("wheel_diff_ki", controller_params_.wheel_diff_ki);
+    auto_declare<bool>("use_k_tab", use_k_tab_);
     auto_declare<std::vector<double>>(
         "q_diag", std::vector<double>{1.0, 1.0, 10.0, 1.0, 1.0, 1.0});
     auto_declare<std::vector<double>>(
         "r_diag", std::vector<double>{1.0, 1.0});
+    auto_declare<std::vector<double>>("K.lengths", std::vector<double>{});
+    auto_declare<std::vector<double>>("K.values", std::vector<double>{});
 
     parameter_callback_handle_ = get_node()->add_on_set_parameters_callback(
         [this](const std::vector<rclcpp::Parameter>& parameters) {
@@ -151,8 +176,22 @@ controller_interface::CallbackReturn LQRController::on_configure(
         get_node()->get_parameter("wheel_diff_kp").as_double();
     controller_params_.wheel_diff_ki =
         get_node()->get_parameter("wheel_diff_ki").as_double();
+    use_k_tab_ = get_node()->get_parameter("use_k_tab").as_bool();
 
     std::string configuration_error;
+    if (!numeric_array_parameter(
+            get_node()->get_parameter("K.lengths"), gain_lengths_,
+            configuration_error) ||
+        !numeric_array_parameter(
+            get_node()->get_parameter("K.values"), gain_values_,
+            configuration_error)) {
+        RCLCPP_ERROR(
+            get_node()->get_logger(),
+            "Invalid LQR gain table parameters: %s",
+            configuration_error.c_str());
+        return controller_interface::CallbackReturn::ERROR;
+    }
+
     if (!std::isfinite(effort_limit_) || effort_limit_ <= 0.0 ||
         requested_mode_ < 0 || requested_mode_ > 3 ||
         !imu_.configure(get_node(), imu_topic_, imu_pose_topic_) ||
@@ -313,8 +352,8 @@ bool LQRController::configure_controller(std::string& error)
         return false;
     }
 
-    LqrGainDebuger::StateWeight q_diag;
-    LqrGainDebuger::InputWeight r_diag;
+    LqrStateWeight q_diag;
+    LqrInputWeight r_diag;
     if (!parameter_to_array(
             get_node()->get_parameter("q_diag"), q_diag, error) ||
         !parameter_to_array(
@@ -324,6 +363,16 @@ bool LQRController::configure_controller(std::string& error)
     if (!controller_.update_lqr_gain(q_diag, r_diag, error)) {
         return false;
     }
+    if (use_k_tab_ &&
+        !controller_.set_gain_table(gain_lengths_, gain_values_, error)) {
+        return false;
+    }
+    if (!use_k_tab_ &&
+        (!gain_lengths_.empty() || !gain_values_.empty()) &&
+        !controller_.set_gain_table(gain_lengths_, gain_values_, error)) {
+        return false;
+    }
+    controller_.use_k_tab(use_k_tab_);
 
     q_diag_ = q_diag;
     r_diag_ = r_diag;
@@ -355,9 +404,14 @@ rcl_interfaces::msg::SetParametersResult LQRController::on_set_parameters(
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
 
-    LqrGainDebuger::StateWeight q_diag = q_diag_;
-    LqrGainDebuger::InputWeight r_diag = r_diag_;
+    LqrStateWeight q_diag = q_diag_;
+    LqrInputWeight r_diag = r_diag_;
+    std::vector<double> gain_lengths = gain_lengths_;
+    std::vector<double> gain_values = gain_values_;
+    bool use_k_tab = use_k_tab_;
     bool lqr_weights_changed = false;
+    bool gain_table_changed = false;
+    bool use_k_tab_changed = false;
     std::string error;
 
     for (const auto& parameter : parameters) {
@@ -375,6 +429,28 @@ rcl_interfaces::msg::SetParametersResult LQRController::on_set_parameters(
                 return result;
             }
             lqr_weights_changed = true;
+        } else if (parameter.get_name() == "K.lengths") {
+            if (!numeric_array_parameter(parameter, gain_lengths, error)) {
+                result.successful = false;
+                result.reason = error;
+                return result;
+            }
+            gain_table_changed = true;
+        } else if (parameter.get_name() == "K.values") {
+            if (!numeric_array_parameter(parameter, gain_values, error)) {
+                result.successful = false;
+                result.reason = error;
+                return result;
+            }
+            gain_table_changed = true;
+        } else if (parameter.get_name() == "use_k_tab") {
+            if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+                result.successful = false;
+                result.reason = "use_k_tab must be a bool";
+                return result;
+            }
+            use_k_tab = parameter.as_bool();
+            use_k_tab_changed = true;
         }
     }
 
@@ -388,12 +464,30 @@ rcl_interfaces::msg::SetParametersResult LQRController::on_set_parameters(
         return result;
     }
 
-    if (lqr_weights_changed) {
+    if ((gain_table_changed || use_k_tab) &&
+        !controller_.set_gain_table(gain_lengths, gain_values, error)) {
+        result.successful = false;
+        result.reason = error;
+        RCLCPP_ERROR(
+            get_node()->get_logger(), "Failed to update LQR gain table: %s",
+            error.c_str());
+        return result;
+    }
+
+    if (use_k_tab_changed) {
+        controller_.use_k_tab(use_k_tab);
+    }
+
+    if (lqr_weights_changed || gain_table_changed || use_k_tab_changed) {
         q_diag_ = q_diag;
         r_diag_ = r_diag;
+        gain_lengths_ = gain_lengths;
+        gain_values_ = gain_values;
+        use_k_tab_ = use_k_tab;
         RCLCPP_INFO(
             get_node()->get_logger(),
-            "LQR gain updated from q_diag/r_diag parameters");
+            "LQR gain source updated: %s",
+            use_k_tab_ ? "K table interpolation" : "online q_diag/r_diag solve");
     }
     return result;
 }

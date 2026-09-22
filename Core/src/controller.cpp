@@ -17,9 +17,9 @@ constexpr double kWheelTorqueLimit = 2.0;
 
 using StateVector = Eigen::Matrix<double, 6, 1>;
 
-constexpr LqrGainDebuger::StateWeight kDefaultLqrQDiag = {
+constexpr LqrStateWeight kDefaultLqrQDiag = {
     1.0, 1.0, 10.0, 1.0, 1.0, 1.0};
-constexpr LqrGainDebuger::InputWeight kDefaultLqrRDiag = {1.0, 1.0};
+constexpr LqrInputWeight kDefaultLqrRDiag = {1.0, 1.0};
 
 }  // namespace
 
@@ -39,9 +39,8 @@ Controller::Controller(IMUBase* imu_in,
       rw(rw_in),
       leg_(kHipHalfDistance, kUpperLinkLength, kLowerLinkLength)
 {
-    gain_debuger_.bind_k_mat(&ground_k_mat_, &air_k_mat_);
     std::string error;
-    (void)gain_debuger_.solve_lqr_gain(
+    (void)gain_scheduler_.solve_lqr_gain(
         kDefaultLqrQDiag, kDefaultLqrRDiag, error);
 }
 
@@ -85,12 +84,24 @@ bool Controller::set_params(const Params& params)
     return true;
 }
 
+bool Controller::set_gain_table(const std::vector<double>& lengths,
+                                const std::vector<double>& values,
+                                std::string& error)
+{
+    return gain_scheduler_.load_table(lengths, values, error);
+}
+
 bool Controller::update_lqr_gain(
-    const LqrGainDebuger::StateWeight& q_diag,
-    const LqrGainDebuger::InputWeight& r_diag,
+    const LqrStateWeight& q_diag,
+    const LqrInputWeight& r_diag,
     std::string& error)
 {
-    return gain_debuger_.solve_lqr_gain(q_diag, r_diag, error);
+    return gain_scheduler_.solve_lqr_gain(q_diag, r_diag, error);
+}
+
+void Controller::use_k_tab(bool mode)
+{
+    gain_scheduler_.use_k_tab(mode);
 }
 
 void Controller::input(float velocity, float omega, float height, int mode)
@@ -216,11 +227,17 @@ bool Controller::update(float dt)
     const double position_error = expected_position_ - x;
     expected_state[0] = std::clamp(position_error, -5.0, 5.0) + x;
 
+    if (!gain_scheduler_.update(average_leg_length)) {
+        lqr_control_.setZero();
+        set_safe_commands();
+        return false;
+    }
+
     lqr_control_.setZero();
     if (state_ == State::Balance) {
-        lqr_control_ = ground_k_mat_ * (expected_state - state);
+        lqr_control_ = gain_scheduler_.ground_gain() * (expected_state - state);
     } else if (state_ == State::Airborne) {
-        lqr_control_ = -air_k_mat_ * state;
+        lqr_control_ = -gain_scheduler_.air_gain() * state;
     }
 
     const double safe_body_width = std::max(std::abs(params_.body_width), 1.0e-6);

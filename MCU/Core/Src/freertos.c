@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "app_mian.hpp"
+#include "app_main.hpp"
 
 /* USER CODE END Includes */
 

@@ -60,7 +60,6 @@ add_library(lqr_controller SHARED
   src/controller/vir_imu.cpp
   src/controller/vir_motor.cpp
   ${CORE_SOURCE_DIR}/src/controller.cpp
-  ${CORE_SOURCE_DIR}/src/lqr_gain_debuger.cpp
   ${CORE_SOURCE_DIR}/src/lqr_gain_scheduler.cpp
   ${CORE_SOURCE_DIR}/src/leg_calc.cpp
 )

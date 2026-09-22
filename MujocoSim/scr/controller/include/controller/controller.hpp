@@ -81,9 +81,11 @@ private:
     std::string imu_pose_topic_{"/imu_pose_sensor/pose"};
     std::string cmd_vel_topic_{"/cmd_vel"};
     Controller::Params controller_params_{};
-    LqrGainDebuger::StateWeight q_diag_ = {
-        1.0, 1.0, 10.0, 1.0, 1.0, 1.0};
-    LqrGainDebuger::InputWeight r_diag_ = {1.0, 1.0};
+    bool use_k_tab_{true};
+    std::vector<double> gain_lengths_;
+    std::vector<double> gain_values_;
+    LqrStateWeight q_diag_ = {1.0, 1.0, 10.0, 1.0, 1.0, 1.0};
+    LqrInputWeight r_diag_ = {1.0, 1.0};
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
         parameter_callback_handle_;
 };
