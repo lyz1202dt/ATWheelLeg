@@ -1,0 +1,21 @@
+# clangd configuration for the STM32 (ARM Cortex-M7) firmware under MCU/.
+#
+# The CMake presets (CMakePresets.json) put compile_commands.json under
+# build/Debug and build/Release, which clangd does NOT discover automatically
+# (it only searches the source tree and each <dir>/build). Point it at the
+# database explicitly.
+#
+# QueryDriver lets clangd query the ARM GCC cross-compiler for its newlib
+# system include paths. We also list those paths explicitly below, because
+# clangd does not always manage to extract them from a cross-compiler on its
+# own, which would otherwise leave <array>/<cstdint>/<string> unresolved.
+CompileFlags:
+  CompilationDatabase: build/Debug
+  QueryDriver: /usr/bin/arm-none-eabi-*
+  Add:
+    - "-isystem/usr/lib/arm-none-eabi/include/c++/10.3.1"
+    - "-isystem/usr/lib/arm-none-eabi/include/c++/10.3.1/arm-none-eabi"
+    - "-isystem/usr/lib/arm-none-eabi/include/c++/10.3.1/backward"
+    - "-isystem/usr/lib/gcc/arm-none-eabi/10.3.1/include"
+    - "-isystem/usr/lib/gcc/arm-none-eabi/10.3.1/include-fixed"
+    - "-isystem/usr/lib/arm-none-eabi/include"
