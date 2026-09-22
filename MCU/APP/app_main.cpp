@@ -41,17 +41,23 @@ Motor* rb_motor = nullptr;
 Motor* lw_motor = nullptr;
 Motor* rw_motor = nullptr;
 IMUBase* imu    = &bmi088_imu;
-Controller controller_instance{imu, lf_motor, rf_motor, lb_motor, rb_motor, lw_motor, rw_motor};
-Controller* controller = &controller_instance;
+Controller* lqr_controller=nullptr;
+ControllerBase* controller = nullptr;
 
 void app_main(void) {
+    //硬件外设初始化
     if (bsp::hardware::init() != HAL_OK) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         return;
     }
-
+    //陀螺仪初始化
     bmi088_imu.init();
 
+    //创建控制器
+    lqr_controller=new Controller(imu, lf_motor, rf_motor, lb_motor, rb_motor, lw_motor, rw_motor);
+    controller=lqr_controller;
+
+    //创建任务
     xTaskCreate(IMUTask, "imu_task", 1024, nullptr, 4, &imu_task_handle);
     xTaskCreate(LqrTask, "lqr_task", 4096, nullptr, 1, &lqr_task_handle);
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -91,7 +97,6 @@ void MotorTask(void* param) {
 
 void ControlTask(void* param) {
     (void)param;
-    controller_instance.use_k_tab(true);
     TickType_t last_wake_time = xTaskGetTickCount();
     for (;;) {
         (void)controller->update(0.002f);
@@ -102,7 +107,7 @@ void ControlTask(void* param) {
 void LqrTask(void* param) {
     (void)param;
     uint32_t consumed_request = 0U;
-
+    lqr_controller->use_k_tab(true);
     for (;;) {
         const uint32_t request = lqr_gain_update_request;
         if (controller != nullptr && request != consumed_request) {
@@ -116,7 +121,7 @@ void LqrTask(void* param) {
             }
 
             std::string error;
-            (void)controller->update_lqr_gain(q_diag, r_diag, error);
+            lqr_controller->update_lqr_gain(q_diag, r_diag, error);
             consumed_request = request;
         }
         vTaskDelay(pdMS_TO_TICKS(100));

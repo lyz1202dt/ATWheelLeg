@@ -4,6 +4,7 @@
 #include "lqr_gain_scheduler.hpp"
 #include "motorbase.hpp"
 #include "leg_calc.hpp"
+#include "controllerbase.hpp"
 
 #include <Eigen/Dense>
 
@@ -14,7 +15,7 @@
 
 #define PRINT_CTRL_INFO 1
 
-class Controller {
+class Controller : public ControllerBase{
 public:
     enum class State : uint8_t {
         VmcTest = 0,
@@ -40,8 +41,8 @@ public:
         double wheel_diff_ki = 0.002;
     };
 
-    bool update(float dt);
-    void input(float velocity, float omega, float height = 0.21f, int mode = 0);
+    bool update(float dt) override;
+    void input(float velocity, float omega, float height = 0.21f, int mode = 0) override;
 
     bool set_params(const Params& params);
     bool set_gain_table(const std::vector<double>& lengths,
@@ -54,14 +55,7 @@ public:
 
     State state() const { return state_; }
     Eigen::Vector2d lqr_control() const;
-
-    IMUBase* imu;
-    Motor* lf;
-    Motor* rf;
-    Motor* lb;
-    Motor* rb;
-    Motor* lw;
-    Motor* rw;
+    
 
 private:
     static constexpr double kHipHalfDistance = 0.11;
