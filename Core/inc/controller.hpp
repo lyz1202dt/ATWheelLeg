@@ -14,6 +14,30 @@
 #include <utility>
 #include <vector>
 
+class LegCalc final : public LegCalcBase {
+public:
+    explicit LegCalc(double hip_half_distance = 0.11,
+                     double upper_link_length = 0.1844,
+                     double lower_link_length = 0.3130);
+
+    bool forward_kinematics(const Eigen::Vector2d& joint_position,
+                            Eigen::Vector2d& leg_state) const override;
+    bool inverse_kinematics(const Eigen::Vector2d& leg_state,
+                            Eigen::Vector2d& joint_position) const override;
+
+protected:
+    Eigen::Matrix2d calc_jacobian(const Eigen::Vector2d& joint_position) const override;
+
+private:
+    template <typename Scalar>
+    bool forward_kinematics_impl(const Eigen::Matrix<Scalar, 2, 1>& joint_position,
+                                 Eigen::Matrix<Scalar, 2, 1>& leg_state) const;
+
+    double l0_;
+    double l1_;
+    double l2_;
+};
+
 
 class LqrGainScheduler {
 public:

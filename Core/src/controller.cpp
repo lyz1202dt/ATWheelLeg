@@ -1,11 +1,161 @@
 #include "controller.hpp"
 
 #include <Eigen/Geometry>
+#include <autodiff/forward/real.hpp>
+#include <autodiff/forward/real/eigen.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <iterator>
+#include <type_traits>
+
+namespace {
+
+double clamp_unit(const double value)
+{
+    return std::clamp(value, -1.0, 1.0);
+}
+
+bool reachable(const double distance, const double link_a, const double link_b)
+{
+    constexpr double kEpsilon = 1.0e-9;
+    return distance > kEpsilon && distance <= link_a + link_b &&
+           distance >= std::abs(link_a - link_b);
+}
+
+} // namespace
+
+LegCalc::LegCalc(double hip_half_distance,
+                 double upper_link_length,
+                 double lower_link_length)
+    : l0_(hip_half_distance),
+      l1_(upper_link_length),
+      l2_(lower_link_length)
+{
+}
+
+template <typename Scalar>
+bool LegCalc::forward_kinematics_impl(
+    const Eigen::Matrix<Scalar, 2, 1>& joint_position,
+    Eigen::Matrix<Scalar, 2, 1>& leg_state) const
+{
+    using Vector2 = Eigen::Matrix<Scalar, 2, 1>;
+    using std::atan2;
+    using std::cos;
+    using std::sin;
+    using std::sqrt;
+
+    leg_state.setZero();
+    if constexpr (std::is_floating_point_v<Scalar>) {
+        if (!std::isfinite(joint_position[0]) || !std::isfinite(joint_position[1])) {
+            return false;
+        }
+    }
+
+    const Scalar l0_scalar = static_cast<Scalar>(l0_);
+    const Scalar l1_scalar = static_cast<Scalar>(l1_);
+    const Scalar l2_scalar = static_cast<Scalar>(l2_);
+    const Scalar epsilon = static_cast<Scalar>(1.0e-9);
+
+    const Vector2 front_elbow(
+        l0_scalar + l1_scalar * cos(joint_position[0]),
+        l1_scalar * sin(joint_position[0]));
+    const Vector2 rear_elbow(
+        -l0_scalar + l1_scalar * cos(joint_position[1]),
+        l1_scalar * sin(joint_position[1]));
+
+    const Vector2 delta = rear_elbow - front_elbow;
+    const Scalar distance_squared = delta.dot(delta);
+    if (!(distance_squared > epsilon * epsilon)) {
+        return false;
+    }
+
+    const Scalar distance = sqrt(distance_squared);
+    if (!(distance <= static_cast<Scalar>(2.0) * l2_scalar + epsilon)) {
+        return false;
+    }
+
+    const Vector2 midpoint = static_cast<Scalar>(0.5) * (front_elbow + rear_elbow);
+    const Vector2 half_delta = static_cast<Scalar>(0.5) * delta;
+    const Scalar height_squared = l2_scalar * l2_scalar - half_delta.dot(half_delta);
+    if (height_squared < -epsilon) {
+        return false;
+    }
+
+    const Scalar height =
+        sqrt(height_squared > static_cast<Scalar>(0.0) ? height_squared : static_cast<Scalar>(0.0));
+    const Vector2 normal = Vector2(-delta[1], delta[0]) / distance;
+    const Vector2 candidate_a = midpoint + height * normal;
+    const Vector2 candidate_b = midpoint - height * normal;
+    const Vector2 wheel = candidate_b[1] > candidate_a[1] ? candidate_b : candidate_a;
+
+    leg_state[0] = sqrt(wheel.dot(wheel));
+    leg_state[1] = atan2(-wheel[0], wheel[1]);
+    return true;
+}
+
+bool LegCalc::forward_kinematics(const Eigen::Vector2d& joint_position,
+                                 Eigen::Vector2d& leg_state) const
+{
+    return forward_kinematics_impl(joint_position, leg_state);
+}
+
+Eigen::Matrix2d LegCalc::calc_jacobian(const Eigen::Vector2d& joint_position) const
+{
+    autodiff::Vector2real q;
+    q << joint_position[0], joint_position[1];
+
+    const auto leg_state_function = [this](const autodiff::Vector2real& q_auto) {
+        autodiff::Vector2real output;
+        forward_kinematics_impl(q_auto, output);
+        return output;
+    };
+
+    autodiff::Vector2real leg_state;
+    Eigen::Matrix2d jacobian;
+    autodiff::jacobian(
+        leg_state_function,
+        autodiff::wrt(q),
+        autodiff::at(q),
+        leg_state,
+        jacobian);
+    return jacobian;
+}
+
+bool LegCalc::inverse_kinematics(const Eigen::Vector2d& leg_state,
+                                 Eigen::Vector2d& joint_position) const
+{
+    const double leg_length = leg_state[0];
+    const double leg_angle = leg_state[1];
+    const double x = -leg_length * std::sin(leg_angle);
+    const double y = leg_length * std::cos(leg_angle);
+
+    const double front_dx = x - l0_;
+    const double front_dy = y;
+    const double front_distance = std::hypot(front_dx, front_dy);
+    if (!reachable(front_distance, l1_, l2_)) {
+        return false;
+    }
+    const double front_angle = std::atan2(front_dy, front_dx);
+    const double front_offset = std::acos(clamp_unit(
+        (l1_ * l1_ + front_distance * front_distance - l2_ * l2_) /
+        (2.0 * l1_ * front_distance)));
+
+    const double rear_dx = x + l0_;
+    const double rear_dy = y;
+    const double rear_distance = std::hypot(rear_dx, rear_dy);
+    if (!reachable(rear_distance, l1_, l2_)) {
+        return false;
+    }
+    const double rear_angle = std::atan2(rear_dy, rear_dx);
+    const double rear_offset = std::acos(clamp_unit(
+        (l1_ * l1_ + rear_distance * rear_distance - l2_ * l2_) /
+        (2.0 * l1_ * rear_distance)));
+
+    joint_position = {front_angle - front_offset, rear_angle + rear_offset};
+    return joint_position.allFinite();
+}
 
 Controller::Controller(IMUBase* imu_in, Motor* lf_in, Motor* rf_in, Motor* lb_in, Motor* rb_in, Motor* lw_in, Motor* rw_in)
     : ControllerBase(imu_in, lf_in, rf_in, lb_in, rb_in, lw_in, rw_in)
