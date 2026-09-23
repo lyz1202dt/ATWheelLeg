@@ -31,12 +31,12 @@ bool LegCalc2::inverse_kinematics(const Eigen::Vector2d& leg_position, Eigen::Ve
     }
     joint_position[1] = std::atan2(Pe.y(), Pe.x());
 
-    Pc << lbc_ * std::cos(joint_position[1]), lbc_ * std::sin(joint_position[1]);
-    Pd = Pc + Eigen::Vector2d(lcd_ * std::cos(beita), lcd_ * std::sin(beita));
+    Pc << lbc_ / (lbc_ + lce_) * Pe;
+    Pd = Pc + lcd_ / lef_ * (Pf - Pe);
 
     double lbd     = Pd.norm();
     double cos_fai = (lab_ * lab_ + lbd * lbd - lda_ * lda_) / (2.0 * lab_ * lbd);
-    if (cos_fai >= 1.0f)
+    if (std::abs(cos_fai) >= 1.0)
         return false;
     double fai        = -std::acos(cos_fai);
     double phi        = std::atan2(Pd.y(), Pd.x());
@@ -67,7 +67,7 @@ bool LegCalc2::forward_kinematics_impl(const Eigen::Matrix<Scalar, 2, 1>& joint_
     Pa << lab_ * cos(joint_position[0]), lab_ * sin(joint_position[0]);
     Pc << lbc_ * cos(joint_position[1]), lbc_ * sin(joint_position[1]);
 
-    const bool ret = calc_circle_cross_point(Pa, lab_, Pc, lbc_, Pd, temp);
+    const bool ret = calc_circle_cross_point(Pa, lda_, Pc, lcd_, Pd, temp);
     if (!ret)
         return false;
 
@@ -76,11 +76,11 @@ bool LegCalc2::forward_kinematics_impl(const Eigen::Matrix<Scalar, 2, 1>& joint_
 
     Scalar lbd       = Pd.norm();
     Scalar cos_alpha = (lbc_ * lbc_ + lcd_ * lcd_ - lbd * lbd) / (2.0 * lbc_ * lcd_);
-    if (cos_alpha >= Scalar(1.0))
+    if (abs(cos_alpha) >= Scalar(1.0))
         return false;
     Scalar alpha = acos(cos_alpha);
 
-    Scalar beita = 3.141592654 - joint_position[1] - alpha;
+    Scalar beita = joint_position[1] + alpha - 3.141592654;
 
     Pe << (lbc_ + lce_) * cos(joint_position[1]), (lbc_ + lce_) * sin(joint_position[1]);
     temp << lef_ * cos(beita), lef_ * sin(beita);
