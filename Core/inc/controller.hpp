@@ -21,8 +21,8 @@ public:
                      double lower_link_length = 0.3130);
 
     bool forward_kinematics(const Eigen::Vector2d& joint_position,
-                            Eigen::Vector2d& leg_state) const override;
-    bool inverse_kinematics(const Eigen::Vector2d& leg_state,
+                            Eigen::Vector2d& leg_position) const override;
+    bool inverse_kinematics(const Eigen::Vector2d& leg_position,
                             Eigen::Vector2d& joint_position) const override;
 
 protected:
@@ -31,7 +31,7 @@ protected:
 private:
     template <typename Scalar>
     bool forward_kinematics_impl(const Eigen::Matrix<Scalar, 2, 1>& joint_position,
-                                 Eigen::Matrix<Scalar, 2, 1>& leg_state) const;
+                                 Eigen::Matrix<Scalar, 2, 1>& leg_position) const;
 
     double l0_;
     double l1_;
@@ -162,9 +162,9 @@ private:
                                   bool& initialized);
     static double clamp_torque(double torque, double limit);
 
-    bool read_leg_state(Motor* front_hip,
+    bool read_leg_position(Motor* front_hip,
                         Motor* rear_hip,
-                        LegState& leg_state) const;
+                        LegState& leg_position) const;
     bool send_recovery_commands();
     bool send_torque_commands(const Eigen::Vector2d& left_joint_torque,
                               const Eigen::Vector2d& right_joint_torque,

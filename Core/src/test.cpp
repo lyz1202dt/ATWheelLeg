@@ -11,9 +11,9 @@ int main()
         return 1;
     }
 
-    Eigen::Vector2d leg_state;
-    if (!leg.forward_kinematics(joint_position, leg_state) ||
-        (leg_state - Eigen::Vector2d(0.27, 0.0)).norm() > 1.0e-6) {
+    Eigen::Vector2d leg_position;
+    if (!leg.forward_kinematics(joint_position, leg_position) ||
+        (leg_position - Eigen::Vector2d(0.27, 0.0)).norm() > 1.0e-6) {
         std::cerr << "kinematics round trip failed\n";
         return 1;
     }

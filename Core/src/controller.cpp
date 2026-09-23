@@ -38,7 +38,7 @@ LegCalc::LegCalc(double hip_half_distance,
 template <typename Scalar>
 bool LegCalc::forward_kinematics_impl(
     const Eigen::Matrix<Scalar, 2, 1>& joint_position,
-    Eigen::Matrix<Scalar, 2, 1>& leg_state) const
+    Eigen::Matrix<Scalar, 2, 1>& leg_position) const
 {
     using Vector2 = Eigen::Matrix<Scalar, 2, 1>;
     using std::atan2;
@@ -46,7 +46,7 @@ bool LegCalc::forward_kinematics_impl(
     using std::sin;
     using std::sqrt;
 
-    leg_state.setZero();
+    leg_position.setZero();
     if constexpr (std::is_floating_point_v<Scalar>) {
         if (!std::isfinite(joint_position[0]) || !std::isfinite(joint_position[1])) {
             return false;
@@ -90,15 +90,15 @@ bool LegCalc::forward_kinematics_impl(
     const Vector2 candidate_b = midpoint - height * normal;
     const Vector2 wheel = candidate_b[1] > candidate_a[1] ? candidate_b : candidate_a;
 
-    leg_state[0] = sqrt(wheel.dot(wheel));
-    leg_state[1] = atan2(-wheel[0], wheel[1]);
+    leg_position[0] = sqrt(wheel.dot(wheel));
+    leg_position[1] = atan2(-wheel[0], wheel[1]);
     return true;
 }
 
 bool LegCalc::forward_kinematics(const Eigen::Vector2d& joint_position,
-                                 Eigen::Vector2d& leg_state) const
+                                 Eigen::Vector2d& leg_position) const
 {
-    return forward_kinematics_impl(joint_position, leg_state);
+    return forward_kinematics_impl(joint_position, leg_position);
 }
 
 Eigen::Matrix2d LegCalc::calc_jacobian(const Eigen::Vector2d& joint_position) const
@@ -106,28 +106,28 @@ Eigen::Matrix2d LegCalc::calc_jacobian(const Eigen::Vector2d& joint_position) co
     autodiff::Vector2real q;
     q << joint_position[0], joint_position[1];
 
-    const auto leg_state_function = [this](const autodiff::Vector2real& q_auto) {
+    const auto leg_position_function = [this](const autodiff::Vector2real& q_auto) {
         autodiff::Vector2real output;
         forward_kinematics_impl(q_auto, output);
         return output;
     };
 
-    autodiff::Vector2real leg_state;
+    autodiff::Vector2real leg_position;
     Eigen::Matrix2d jacobian;
     autodiff::jacobian(
-        leg_state_function,
+        leg_position_function,
         autodiff::wrt(q),
         autodiff::at(q),
-        leg_state,
+        leg_position,
         jacobian);
     return jacobian;
 }
 
-bool LegCalc::inverse_kinematics(const Eigen::Vector2d& leg_state,
+bool LegCalc::inverse_kinematics(const Eigen::Vector2d& leg_position,
                                  Eigen::Vector2d& joint_position) const
 {
-    const double leg_length = leg_state[0];
-    const double leg_angle = leg_state[1];
+    const double leg_length = leg_position[0];
+    const double leg_angle = leg_position[1];
     const double x = -leg_length * std::sin(leg_angle);
     const double y = leg_length * std::cos(leg_angle);
 
@@ -247,7 +247,7 @@ bool Controller::update(float dt) {
 
     LegState left_leg;
     LegState right_leg;
-    if (!read_leg_state(lf, lb, left_leg) || !read_leg_state(rf, rb, right_leg)) {
+    if (!read_leg_position(lf, lb, left_leg) || !read_leg_position(rf, rb, right_leg)) {
         set_safe_commands();
         return false;
     }
@@ -434,17 +434,17 @@ double Controller::clamp_torque(double torque, double limit) {
     return std::clamp(torque, -limit, limit);
 }
 
-bool Controller::read_leg_state(Motor* front_hip, Motor* rear_hip, LegState& leg_state) const {
-    leg_state.joint_position << front_hip->state.rad, rear_hip->state.rad;
-    leg_state.joint_velocity << front_hip->state.vel, rear_hip->state.vel;
+bool Controller::read_leg_position(Motor* front_hip, Motor* rear_hip, LegState& leg_position) const {
+    leg_position.joint_position << front_hip->state.rad, rear_hip->state.rad;
+    leg_position.joint_velocity << front_hip->state.vel, rear_hip->state.vel;
     const Eigen::Vector2d joint_torque(front_hip->state.toqeue, rear_hip->state.toqeue);
-    if (!leg_.forward_kinematics(leg_state.joint_position, leg_state.leg_position)
-        || !leg_.forward_velocity(leg_state.joint_position, leg_state.joint_velocity, leg_state.leg_velocity)
-        || !leg_.forward_dynamics(leg_state.joint_position, joint_torque, leg_state.leg_effort)) {
+    if (!leg_.forward_kinematics(leg_position.joint_position, leg_position.leg_position)
+        || !leg_.forward_velocity(leg_position.joint_position, leg_position.joint_velocity, leg_position.leg_velocity)
+        || !leg_.forward_dynamics(leg_position.joint_position, joint_torque, leg_position.leg_effort)) {
         return false;
     }
 
-    return leg_state.leg_position.allFinite() && leg_state.leg_velocity.allFinite() && leg_state.leg_effort.allFinite();
+    return leg_position.leg_position.allFinite() && leg_position.leg_velocity.allFinite() && leg_position.leg_effort.allFinite();
 }
 
 bool Controller::send_recovery_commands() {
