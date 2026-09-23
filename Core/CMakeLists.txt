@@ -55,6 +55,7 @@ endif()
 add_library(core
     src/controllerbase.cpp
     src/controller.cpp
+    src/controller10.cpp
     src/leg_calc.cpp
 )
 add_library(Core::core ALIAS core)

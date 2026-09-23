@@ -1,7 +1,6 @@
 #include <iostream>
 
 #include "controller.hpp"
-#include "leg_calc.hpp"
 
 int main()
 {
