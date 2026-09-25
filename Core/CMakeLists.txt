@@ -57,6 +57,7 @@ add_library(core
     src/controller.cpp
     src/controller10.cpp
     src/leg_calc.cpp
+    src/pid.cpp
 )
 add_library(Core::core ALIAS core)
 
