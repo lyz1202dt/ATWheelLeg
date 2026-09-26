@@ -1,6 +1,6 @@
 <mujoco model="at_wheel_leg">
     <compiler angle="radian" />
-    <option timestep="0.001" integrator="RK4" gravity="0 0 -9.81" />
+    <option timestep="0.002" integrator="RK4" gravity="0 0 -9.81" />
 
     <asset>
         <mesh name="base_link" file="base_link.STL" />

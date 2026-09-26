@@ -102,6 +102,14 @@ LQRController::LQRController()
 
 controller_interface::CallbackReturn LQRController::on_init()
 {
+    const auto node = get_node();
+    lf_motor_.set_node(node, "left_front_hip_joint", 0U);
+    rf_motor_.set_node(node, "right_front_hip_joint", 1U);
+    lb_motor_.set_node(node, "left_rear_hip_joint", 2U);
+    rb_motor_.set_node(node, "right_rear_hip_joint", 3U);
+    lw_motor_.set_node(node, "left_wheel_joint", 4U);
+    rw_motor_.set_node(node, "right_wheel_joint", 5U);
+
     auto_declare<std::string>("imu_topic", imu_topic_);
     auto_declare<std::string>("imu_pose_topic", imu_pose_topic_);
     auto_declare<std::string>("cmd_vel_topic", cmd_vel_topic_);
@@ -193,17 +201,8 @@ controller_interface::CallbackReturn LQRController::on_configure(
             configuration_error.c_str());
         return controller_interface::CallbackReturn::ERROR;
     }
-
-    if (!std::isfinite(effort_limit_) || effort_limit_ <= 0.0 ||
-        requested_mode_ < 0 || requested_mode_ > 3 ||
-        !imu_.configure(get_node(), imu_topic_, imu_pose_topic_) ||
-        !configure_controller(configuration_error)) {
-        RCLCPP_ERROR(
-            get_node()->get_logger(),
-            "Failed to configure controller parameters or IMU: %s",
-            configuration_error.c_str());
-        return controller_interface::CallbackReturn::ERROR;
-    }
+        imu_.configure(get_node(), imu_topic_, imu_pose_topic_);
+        configure_controller(configuration_error);
 
     cmd_vel_subscriber_ = get_node()->create_subscription<geometry_msgs::msg::Twist>(
         cmd_vel_topic_,
