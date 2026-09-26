@@ -43,7 +43,10 @@ LQRControllerAT::LQRControllerAT() {
     lb_motor_.offset  = -1.136586325; // angle2rad(-65.1216f);
     rb_motor_.offset  = -1.136586325; // angle2rad(-65.1216f);
 
-    controller_ = std::make_unique<::ControllerAT>(&imu_, &lf_motor_, &rf_motor_, &lb_motor_, &rb_motor_, &lw_motor_, &rw_motor_);
+    auto controller = std::make_unique<::ControllerAT>(&imu_, &lf_motor_, &rf_motor_, &lb_motor_, &rb_motor_, &lw_motor_, &rw_motor_);
+    controller->register_debug_logger(
+        [this](const char* message) { RCLCPP_INFO(get_node()->get_logger(), "%s", message == nullptr ? "" : message); });
+    controller_ = std::move(controller);
 }
 
 controller_interface::CallbackReturn LQRControllerAT::on_init() {
@@ -84,6 +87,7 @@ controller_interface::CallbackReturn LQRControllerAT::on_init() {
             }
             return result;
         });
+    return controller_interface::CallbackReturn::SUCCESS;
 }
 
 controller_interface::CallbackReturn LQRControllerAT::on_configure(const rclcpp_lifecycle::State& previous_state) {
