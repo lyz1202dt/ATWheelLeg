@@ -32,7 +32,7 @@ def generate_launch_description():
     mujoco_model_path = os.path.join(
         get_package_share_directory("atwl"),
         "model",
-        "at_wheel_leg.xml",
+        "scene.xml",
     )
 
     mujoco = Node(

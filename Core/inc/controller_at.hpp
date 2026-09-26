@@ -21,8 +21,8 @@ public:
         ALL_FLY,      // 全部悬空，LQR仅姿态稳定
     };
     struct Param{
-        float leg_kp{10.0f};
-        float leg_kd{1.0f};
+        float leg_kp{0.0f};
+        float leg_kd{0.0f};
     };
     ControllerAT(IMUBase* imu, Motor* lf, Motor* rf, Motor* lb, Motor* rb, Motor* lw, Motor* rw);
     bool update(float dt) override;

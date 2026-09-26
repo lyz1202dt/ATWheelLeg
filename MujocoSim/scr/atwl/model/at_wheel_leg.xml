@@ -21,7 +21,7 @@
     </asset>
 
     <worldbody>
-        <body name="base_link">
+        <body name="base_link" pos="0 0 0.6">
             <freejoint name="floating_base" />
             <inertial pos="0.0166017 -0.00156965 -0.09477296" mass="10.5125949"
                 fullinertia="0.14496049 0.14966292 0.24991099 0 -0.00068753 0.00038021" />
