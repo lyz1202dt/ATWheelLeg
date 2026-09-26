@@ -151,7 +151,7 @@ private:
                               double right_normal_force,
                               double dt);
 
-    LegCalc leg_;
+    FiveBarLegCalc leg_;
     LqrGainScheduler gain_scheduler_;
     Params params_;
     State state_ = State::Recovery;

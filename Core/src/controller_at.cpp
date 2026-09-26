@@ -8,7 +8,7 @@ ControllerAT::ControllerAT(IMUBase* imu, Motor* lf, Motor* rf, Motor* lb, Motor*
     : ControllerBase(imu, lf, rf, lb, rb, lw, rw)
     , left_leg_length(1000.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
     , right_leg_legth(1000.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f) {
-    leg_calc_ = std::make_unique<LegCalc2>(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
+    leg_calc_ = std::make_unique<OffsetParallelCalc>(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
 }
 
 void ControllerAT::register_debug_logger(DebugLogger logger) {
@@ -103,8 +103,7 @@ bool ControllerAT::update(float dt) {
         {
             reset_traj_generated=false;
             exp_state=state=TOUCH_GROUND;
-            if(debug_logger_)
-                debug_logger_("TOUCH_GROUND");
+            debug_log("TOUCH_GROUND:%d",state);
         }
     }
     else if(state==TOUCH_GROUND)

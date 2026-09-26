@@ -35,7 +35,7 @@ bool test_leg_calc2()
         Eigen::Vector2d(0.26, 0.00),
     };
 
-    const LegCalc2 leg(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
+    const OffsetParallelCalc leg(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
     bool passed = true;
     double max_target_error = 0.0;
     double max_joint_round_trip_error = 0.0;
@@ -147,7 +147,7 @@ int main()
         return 1;
     }
 
-    LegCalc leg(0.11, 0.1844, 0.3130);
+    FiveBarLegCalc leg(0.11, 0.1844, 0.3130);
     Eigen::Vector2d joint_position;
     if (!leg.inverse_kinematics(Eigen::Vector2d(0.27, 0.0), joint_position)) {
         std::cerr << "inverse kinematics failed\n";
@@ -161,7 +161,7 @@ int main()
         return 1;
     }
 
-    LegCalc3 serial_leg(0.08, 0.20, 0.17);
+    SeriesJointCalc serial_leg(0.08, 0.20, 0.17);
     const Eigen::Vector2d serial_joint(0.35, 0.90);
     Eigen::Vector2d serial_position;
     if (!serial_leg.forward_kinematics(serial_joint, serial_position)) {

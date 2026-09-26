@@ -9,6 +9,7 @@
 #include <Eigen/src/Core/Matrix.h>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <memory>
 
@@ -92,11 +93,28 @@ public:
     void input(float velocity, float omega, float height, int mode) override;
     void register_debug_logger(DebugLogger logger);
 
+    template <typename... Args>
+    void debug_log(const char* format, Args... args) const {
+        if (!debug_logger_ || format == nullptr) {
+            return;
+        }
+
+        char buffer[256]{};
+        const int written = std::snprintf(buffer, sizeof(buffer), format, args...);
+        if (written < 0) {
+            return;
+        }
+        buffer[sizeof(buffer) - 1U] = '\0';
+        if(debug_logger_)
+            debug_logger_(buffer);
+    }
+
     std::unique_ptr<LegCalcBase> leg_calc_;
     RobotState state{IDEL}, exp_state{IDEL};
     Param param;
     PID left_leg_length,right_leg_legth;
     Eigen::Matrix<double,4,10> K,K_air;
+    double ref_pos{0.0},ref_vel{0.0},ref_omega{0.0};
 private:
     DebugLogger debug_logger_;
     Slope<Eigen::Vector2d> left_leg_slope,right_leg_slope;

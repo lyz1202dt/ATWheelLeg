@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <Eigen/src/Core/Matrix.h>
 
 class LegCalcBase {
 public:
@@ -31,9 +32,9 @@ protected:
 };
 
 //五连杆并联结构
-class LegCalc final : public LegCalcBase {
+class FiveBarLegCalc final : public LegCalcBase {
 public:
-    explicit LegCalc(double hip_half_distance = 0.11,
+    explicit FiveBarLegCalc(double hip_half_distance = 0.11,
                      double upper_link_length = 0.1844,
                      double lower_link_length = 0.3130);
 
@@ -56,9 +57,9 @@ private:
 };
 
 //偏置并联结构
-class LegCalc2 : public LegCalcBase {
+class OffsetParallelCalc : public LegCalcBase {
 public:
-    LegCalc2(double lab, double lbc, double lcd, double lda, double lce, double lef);
+    OffsetParallelCalc(double lab, double lbc, double lcd, double lda, double lce, double lef);
 
     bool forward_kinematics(const Eigen::Vector2d& joint_position,
                             Eigen::Vector2d& leg_position) const override;
@@ -68,7 +69,6 @@ public:
 protected:
     Eigen::Matrix2d calc_jacobian(const Eigen::Vector2d& joint_position) const override;
 
-private:
     template <typename Scalar>
     bool forward_kinematics_impl(const Eigen::Matrix<Scalar, 2, 1>& joint_position,
                                  Eigen::Matrix<Scalar, 2, 1>& leg_position) const;
@@ -90,10 +90,28 @@ private:
     double lef_;
 };
 
-//真串联结构
-class LegCalc3 final : public LegCalcBase {
+//带重力补偿的偏置并联结构(只考察小腿和大腿的重量)
+class OffsetParallelCalc2 : public OffsetParallelCalc {
 public:
-    explicit LegCalc3(const double &l0,const double &l1,double const &l2);
+    OffsetParallelCalc2(double lab, double lbc, double lcd, double lda, double lce, double lef,double d1,double d2,double m1,double m2);
+    bool forward_dynamics(const Eigen::Vector2d& joint_position,
+                          const Eigen::Vector2d& joint_torque,
+                          Eigen::Vector2d& leg_effort) const override;
+    bool inverse_dynamics(const Eigen::Vector2d& joint_position,
+                          const Eigen::Vector2d& leg_effort,
+                          Eigen::Vector2d& joint_torque) const override;
+    double d1_,d2_,m1_,m2_; //大腿质心距离，小腿质心距离，大腿质量，小腿质量
+
+    template <typename Scalar>
+    bool potential_energy_impl(const Eigen::Matrix<Scalar, 2, 1>& joint_position, Scalar& potential) const;
+
+    bool calc_gravity_torque(const Eigen::Vector2d& joint_position, Eigen::Vector2d& gravity_torque) const;
+};
+
+//真串联结构
+class SeriesJointCalc final : public LegCalcBase {
+public:
+    explicit SeriesJointCalc(const double &l0,const double &l1,double const &l2);
 
     bool forward_kinematics(const Eigen::Vector2d& joint_position,
                             Eigen::Vector2d& leg_position) const override;
