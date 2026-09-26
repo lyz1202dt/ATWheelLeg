@@ -1,0 +1,32 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500
+
+    mujoco_sim_controller:
+      type: lqr_controller/MujocoSimController
+
+    at_controller:
+      type: lqr_controller/LQRControllerAT
+
+mujoco_sim_controller:
+  ros__parameters:
+    use_sim_time: true
+    effort_limit: 20.0
+    joint_names:
+      - base_link_left_front1_link_joint
+      - base_link_left_rear1_link_joint
+      - left_rear2_link_left_wheel_link_joint
+      - base_link_right_front1_link_joint
+      - base_link_right_rear1_link_joint
+      - right_rear2_link_right_wheel_link_joint
+
+at_controller:
+  ros__parameters:
+    use_sim_time: true
+    imu_topic: /imu_imu_sensor/imu
+    imu_pose_topic: /imu_pose_sensor/pose
+    cmd_vel_topic: /cmd_vel
+    effort_limit: 20.0
+    mode: 0
+    expected_velocity: 0.0
+    expected_omega: 0.0

@@ -22,7 +22,7 @@ size_t target_index(const size_t motor_index, const size_t interface_index) {
 MujocoSimController::MujocoSimController() = default;
 
 controller_interface::CallbackReturn MujocoSimController::on_init() {
-    motor_joint_names_ = {
+    const std::array<std::string, kMotorCount> default_joint_names = {
         "left_front_hip_joint",
         "left_rear_hip_joint",
         "left_wheel_joint",
@@ -32,6 +32,18 @@ controller_interface::CallbackReturn MujocoSimController::on_init() {
     };
 
     auto_declare<double>("effort_limit", effort_limit_);
+    auto_declare<std::vector<std::string>>(
+        "joint_names",
+        std::vector<std::string>(
+            default_joint_names.begin(), default_joint_names.end()));
+
+    if (!load_joint_names()) {
+        RCLCPP_ERROR(
+            get_node()->get_logger(),
+            "joint_names must contain exactly %zu joint names",
+            kMotorCount);
+        return controller_interface::CallbackReturn::ERROR;
+    }
 
     return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -40,6 +52,13 @@ controller_interface::CallbackReturn MujocoSimController::on_configure(const rcl
     (void)previous_state;
 
     effort_limit_ = get_node()->get_parameter("effort_limit").as_double();
+    if (!load_joint_names() || !std::isfinite(effort_limit_) ||
+        effort_limit_ <= 0.0) {
+        RCLCPP_ERROR(
+            get_node()->get_logger(),
+            "Invalid middle controller parameters");
+        return controller_interface::CallbackReturn::ERROR;
+    }
 
     reference_interfaces_.assign(kMotorCount * kTargetInterfacesPerMotor, 0.0);
 
@@ -138,6 +157,20 @@ double MujocoSimController::clamp_effort(const double effort) const {
         return 0.0;
     }
     return std::clamp(effort, -effort_limit_, effort_limit_);
+}
+
+bool MujocoSimController::load_joint_names() {
+    const auto configured_names =
+        get_node()->get_parameter("joint_names").as_string_array();
+    if (configured_names.size() != kMotorCount) {
+        return false;
+    }
+
+    std::copy(
+        configured_names.begin(),
+        configured_names.end(),
+        motor_joint_names_.begin());
+    return true;
 }
 
 }  // namespace lqr_controller

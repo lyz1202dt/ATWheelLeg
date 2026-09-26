@@ -20,6 +20,7 @@
   <depend>urdf</depend>
 
   <exec_depend>car</exec_depend>
+  <exec_depend>atwl</exec_depend>
   <exec_depend>mujoco_ros2_control</exec_depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>xacro</exec_depend>

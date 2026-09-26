@@ -11,6 +11,17 @@ PID::PID(float kp, float kd, float ki, float inter_limit, float output_limit, fl
       last_measure_(0.0f),
       integral_(0.0f) {}
 
+PID::PID(): kp_(0.0f),
+      kd_(0.0f),
+      ki_(0.0f),
+      inter_limit_(0.0f),
+      output_limit_(0.0f),
+      dt_(0.001f),
+      last_error_(0.0f),
+      last_measure_(0.0f),
+      integral_(0.0f) {
+}
+
 float PID::update(float measure, float target) {
     float error = target - measure;
 
@@ -86,4 +97,3 @@ float PID::reset() {
     integral_ = 0.0f;
     return 0.0f;
 }
-

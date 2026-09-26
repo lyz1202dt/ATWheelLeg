@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="at_wheel_leg">
+    <xacro:include filename="$(find atwl)/model/at_wheel_leg.urdf" />
+
+    <ros2_control name="atwl_system" type="system">
+        <hardware>
+            <plugin>mujoco_ros2_control/MujocoSystem</plugin>
+        </hardware>
+
+        <joint name="base_link_left_front1_link_joint">
+            <command_interface name="effort" />
+            <state_interface name="position" />
+            <state_interface name="velocity" />
+            <state_interface name="effort" />
+        </joint>
+
+        <joint name="base_link_right_front1_link_joint">
+            <command_interface name="effort" />
+            <state_interface name="position" />
+            <state_interface name="velocity" />
+            <state_interface name="effort" />
+        </joint>
+
+        <joint name="base_link_left_rear1_link_joint">
+            <command_interface name="effort" />
+            <state_interface name="position" />
+            <state_interface name="velocity" />
+            <state_interface name="effort" />
+        </joint>
+
+        <joint name="base_link_right_rear1_link_joint">
+            <command_interface name="effort" />
+            <state_interface name="position" />
+            <state_interface name="velocity" />
+            <state_interface name="effort" />
+        </joint>
+
+        <joint name="left_rear2_link_left_wheel_link_joint">
+            <command_interface name="effort" />
+            <state_interface name="position" />
+            <state_interface name="velocity" />
+            <state_interface name="effort" />
+        </joint>
+
+        <joint name="right_rear2_link_right_wheel_link_joint">
+            <command_interface name="effort" />
+            <state_interface name="position" />
+            <state_interface name="velocity" />
+            <state_interface name="effort" />
+        </joint>
+    </ros2_control>
+</robot>

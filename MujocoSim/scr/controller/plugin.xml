@@ -7,6 +7,13 @@
   </class>
 
   <class
+    name="lqr_controller/LQRControllerAT"
+    type="lqr_controller::LQRControllerAT"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>AT wheel-leg controller using the polymorphic ControllerAT core.</description>
+  </class>
+
+  <class
     name="lqr_controller/MujocoSimController"
     type="lqr_controller::MujocoSimController"
     base_class_type="controller_interface::ChainableControllerInterface">

@@ -55,7 +55,7 @@ endif()
 add_library(core
     src/controllerbase.cpp
     src/controller.cpp
-    src/controller10.cpp
+    src/controller_at.cpp
     src/leg_calc.cpp
     src/pid.cpp
 )

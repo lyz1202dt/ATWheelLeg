@@ -48,6 +48,7 @@ private:
 
     void read_joint_states();
     double clamp_effort(double effort) const;
+    bool load_joint_names();
 
     std::array<std::string, kMotorCount> motor_joint_names_{};
     std::array<MotorState, kMotorCount> motor_state_{};
