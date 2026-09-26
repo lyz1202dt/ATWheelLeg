@@ -30,7 +30,7 @@ public:
     void input(float velocity, float omega, float height, int mode) override;
 
     std::unique_ptr<LegCalcBase> leg_calc_;
-    RobotState state{IDEL}, exp_state{IDEL};
+    RobotState state{IDEL}, exp_state{VMC_TEST};
     Param param;
     PID left_leg_length,right_leg_legth;
     Eigen::Matrix<double,4,10> K,K_air;
