@@ -10,7 +10,7 @@
 ControllerAT::ControllerAT(IMUBase* imu, Motor* lf, Motor* rf, Motor* lb, Motor* rb, Motor* lw, Motor* rw)
     : ControllerBase(imu, lf, rf, lb, rb, lw, rw)
     , left_leg_length(1000.0f, 15.0f, 0.0f, 0.0f, 200.0f, 0.002f)
-    , right_leg_length(1000.0f, 15.0f, 0.0f, 0.0f, 40.0f, 0.002f) {
+    , right_leg_length(1000.0f, 15.0f, 0.0f, 0.0f, 200.0f, 0.002f) {
     leg_calc_ = std::make_unique<OffsetParallelCalc>(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
 }
 
