@@ -1,4 +1,5 @@
 #include "controller_at.hpp"
+#include <algorithm>
 #include <Eigen/src/Core/Matrix.h>
 #include <array>
 #include <chrono>
@@ -8,8 +9,8 @@
 
 ControllerAT::ControllerAT(IMUBase* imu, Motor* lf, Motor* rf, Motor* lb, Motor* rb, Motor* lw, Motor* rw)
     : ControllerBase(imu, lf, rf, lb, rb, lw, rw)
-    , left_leg_length(700.0f, 20.0f, 0.0f, 0.0f, 200.0f, 0.002f)
-    , right_leg_legth(700.0f, 20.0f, 0.0f, 0.0f, 200.0f, 0.002f) {
+    , left_leg_length(1000.0f, 15.0f, 0.0f, 0.0f, 200.0f, 0.002f)
+    , right_leg_length(1000.0f, 15.0f, 0.0f, 0.0f, 40.0f, 0.002f) {
     leg_calc_ = std::make_unique<OffsetParallelCalc>(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
 }
 
@@ -17,23 +18,87 @@ void ControllerAT::register_debug_logger(DebugLogger logger) {
     debug_logger_ = std::move(logger);
 }
 
+double ControllerAT::wrap_to_pi(double angle) {
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kTwoPi = 2.0 * kPi;
+    if (!std::isfinite(angle)) {
+        return 0.0;
+    }
+
+    angle = std::fmod(angle + kPi, kTwoPi);
+    if (angle < 0.0) {
+        angle += kTwoPi;
+    }
+    return angle - kPi;
+}
+
+bool ControllerAT::extract_ypr(const Eigen::Quaternionf& orientation,
+                               double& yaw,
+                               double& pitch,
+                               double& roll) {
+    Eigen::Quaterniond quaternion(
+        static_cast<double>(orientation.w()),
+        static_cast<double>(orientation.x()),
+        static_cast<double>(orientation.y()),
+        static_cast<double>(orientation.z()));
+
+    const double norm = quaternion.norm();
+    if (!std::isfinite(norm) || norm < 1.0e-9) {
+        return false;
+    }
+    quaternion.normalize();
+
+    const Eigen::Matrix3d rotation = quaternion.toRotationMatrix();
+    yaw = std::atan2(rotation(1, 0), rotation(0, 0));
+    pitch = std::atan2(
+        -rotation(2, 0),
+        std::hypot(rotation(0, 0), rotation(1, 0)));
+    roll = std::atan2(rotation(2, 1), rotation(2, 2));
+
+    return std::isfinite(yaw) && std::isfinite(pitch) && std::isfinite(roll);
+}
+
+double ControllerAT::low_pass_filter(double input,
+                                     double alpha,
+                                     double& filtered_value,
+                                     bool& initialized) {
+    if (!std::isfinite(input)) {
+        return initialized ? filtered_value : 0.0;
+    }
+
+    if (!initialized) {
+        filtered_value = input;
+        initialized = true;
+        return filtered_value;
+    }
+
+    const double clamped_alpha =
+        std::clamp(std::isfinite(alpha) ? alpha : 1.0, 0.0, 1.0);
+    filtered_value = (1.0 - clamped_alpha) * filtered_value + clamped_alpha * input;
+    return filtered_value;
+}
+
 bool ControllerAT::update(float dt) {
     (void)dt;
+    if (state != LQR_CTRL) {
+        yaw_tracking_initialized_ = false;
+    }
+
     if (state == IDEL) {
         lf->set_command(-0.785f, 0.0F, 0.0F, param.motor_kp, param.motor_kd);
         rf->set_command(-0.785f, 0.0F, 0.0F, param.motor_kp, param.motor_kd);
         lb->set_command(0.785f, 0.0F, 0.0F, param.motor_kp, param.motor_kd);
         rb->set_command(0.785f, 0.0F, 0.0F, param.motor_kp, param.motor_kd);
-        lw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
-        rw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
+        lw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.01F);
+        rw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.01F);
         if (exp_state == VMC_TEST) {
             state = VMC_TEST;
         }else if(exp_state==KINAMIC_TEST)
             state=KINAMIC_TEST;
-        else if(exp_state==READY_STAND1)
-            state=READY_STAND1;
+        else if(exp_state==LQR_CTRL)
+            state=LQR_CTRL;
     } else if (state == KINAMIC_TEST) {
-        const Eigen::Vector2d leg_target(0.25, 0.0);
+        const Eigen::Vector2d leg_target(0.2, 0.0);
         Eigen::Vector2d joint_target = Eigen::Vector2d::Zero();
         if (!leg_calc_->inverse_kinematics(leg_target, joint_target) || !joint_target.allFinite()) {
             return false;
@@ -43,12 +108,18 @@ bool ControllerAT::update(float dt) {
         rf->set_command(static_cast<float>(joint_target[0]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
         lb->set_command(static_cast<float>(joint_target[1]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
         rb->set_command(static_cast<float>(joint_target[1]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
-        lw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
-        rw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
+        lw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.01F);
+        rw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.01F);
+
+        Eigen::Vector2d pos;
+        leg_calc_->forward_kinematics(Eigen::Vector2d(lf->state.rad,lb->state.rad), pos);
+        debug_log("left_leg_length=%lf",pos[0]);
         if (exp_state == IDEL) {
             state = IDEL;
         }else if(exp_state==VMC_TEST)
             state=VMC_TEST;
+        else if(exp_state==LQR_CTRL)
+            state=LQR_CTRL;
     }
     else if(state==VMC_TEST)
     {
@@ -72,6 +143,8 @@ bool ControllerAT::update(float dt) {
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_exp_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_exp_torque);
 
+        debug_log("left_length:%lf,right_length:%lf",left_leg_pos[0],right_leg_pos[0]);
+
         lf->set_command(0.0f, 0.0f, left_joint_exp_torque[0], 0.0f, 0.0f);
         rf->set_command(0.0f, 0.0f, right_joint_exp_torque[0], 0.0f, 0.0f);
         lb->set_command(0.0f, 0.0f, left_joint_exp_torque[1], 0.0f, 0.0f);
@@ -81,6 +154,8 @@ bool ControllerAT::update(float dt) {
             state = IDEL;
         }else if(exp_state==KINAMIC_TEST)
             state=KINAMIC_TEST;
+        else if(exp_state==LQR_CTRL)
+            state=LQR_CTRL;
     }
     else if(state==READY_STAND1)    //到达准备站立状态1
     {
@@ -113,24 +188,52 @@ bool ControllerAT::update(float dt) {
         //常量定义
         constexpr double Rw=0.058;
 
-        Eigen::Vector3d eular=imu->orientation.toRotationMatrix().eulerAngles(0, 1, 2).cast<double>(); //0-x,1-y,2-z  先提取z轴
-        debug_log("x:%lf,y:%lf", eular[0],eular[1]);
-        if(std::abs(eular[0])>0.3||std::abs(eular[1])>0.3)  //姿态发散，切入位控
-        {
-            const Eigen::Vector2d leg_target(0.25, 0.0);
-            Eigen::Vector2d joint_target = Eigen::Vector2d::Zero();
-            if (!leg_calc_->inverse_kinematics(leg_target, joint_target) || !joint_target.allFinite()) {
-                return false;
-            }
+        Eigen::Quaternionf orientation;
+        Eigen::Vector3d angular_velocity;
+        bool imu_state_valid;
+        imu->lock_memory();
+        orientation = imu->orientation;
+        angular_velocity = imu->angular_velocity;
+        imu_state_valid = imu->state_valid_;
+        imu->unlock_memory();
 
-            lf->set_command(static_cast<float>(joint_target[0]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
-            rf->set_command(static_cast<float>(joint_target[0]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
-            lb->set_command(static_cast<float>(joint_target[1]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
-            rb->set_command(static_cast<float>(joint_target[1]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
-            lw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
-            rw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
-            return true;
+        if (!imu_state_valid) {
+            return false;
         }
+
+        double yaw;
+        double pitch;
+        double roll;
+        if (!extract_ypr(orientation, yaw, pitch, roll)) {
+            return false;
+        }
+
+        if (!yaw_tracking_initialized_) {
+            yaw_tracking_initialized_ = true;
+            yaw_previous_ = yaw;
+            yaw_unwrapped_ = yaw;
+            yaw_reference_ = yaw;
+        } else {
+            yaw_unwrapped_ += wrap_to_pi(yaw - yaw_previous_);
+            yaw_previous_ = yaw;
+        }
+
+        // if(std::abs(eular[1])>0.3||std::abs(eular[2])>0.3)  //姿态发散，切入位控
+        // {
+        //     const Eigen::Vector2d leg_target(0.25, 0.0);
+        //     Eigen::Vector2d joint_target = Eigen::Vector2d::Zero();
+        //     if (!leg_calc_->inverse_kinematics(leg_target, joint_target) || !joint_target.allFinite()) {
+        //         return false;
+        //     }
+
+        //     lf->set_command(static_cast<float>(joint_target[0]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
+        //     rf->set_command(static_cast<float>(joint_target[0]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
+        //     lb->set_command(static_cast<float>(joint_target[1]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
+        //     rb->set_command(static_cast<float>(joint_target[1]), 0.0F, 0.0F, param.motor_kp, param.motor_kd);
+        //     lw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
+        //     rw->set_command(0.0F, 0.0F, 0.0F, 0.0F, 0.0F);
+        //     return true;
+        // }
 
         //计算腿的位置，速度，受力
         Eigen::Vector2d left_joint_pos(lf->state.rad,lb->state.rad);
@@ -152,20 +255,32 @@ bool ControllerAT::update(float dt) {
         //     thlr, dthlr,
         //     thb, dthb])
         
-        Eigen::Vector<double,10> x;
+        Eigen::Vector<double,10> x,xd;
+        xd.setZero();   //参考输入
         const double s=0.5*(lw->state.rad+rw->state.rad)*Rw;
-        const double ds=0.5*(lw->state.vel+rw->state.vel)*Rw;
-        const double phi=eular[2];
-        const double dphi=imu->angular_velocity[2];
-        const double thb=eular[1];
-        const double dthb=imu->angular_velocity[1];
-        const double thll=thb+left_leg_pos[1];
-        const double thlr=thb+right_leg_pos[1];
-        const double dthll=dthb+left_leg_vel[1];
-        const double dthlr=dthb+right_leg_vel[1];
-        x<<s,ds,phi,dphi,thll,dthll,thlr,dthlr,thb,dthb;
-        //debug_log(const char *format, Args args...)
+        double ds=0.5*(lw->state.vel+rw->state.vel)*Rw;
+        const double phi = yaw_unwrapped_ - yaw_reference_;
+        double dphi=angular_velocity[2];
+        const double thb=pitch;
+        double dthb=angular_velocity[1];
+        const double thll=wrap_to_pi(thb+left_leg_pos[1]);
+        const double thlr=wrap_to_pi(thb+right_leg_pos[1]);
+        double dthll=dthb+left_leg_vel[1];
+        double dthlr=dthb+right_leg_vel[1];
 
+        ds = low_pass_filter(ds, 0.07, filtered_ds_, ds_filter_initialized_);
+        dphi = low_pass_filter(dphi, 0.7, filtered_dphi_, dphi_filter_initialized_);
+        dthll = low_pass_filter(dthll, 0.7, filtered_dthll_, dthll_filter_initialized_);
+        dthlr = low_pass_filter(dthlr, 0.7, filtered_dthlr_, dthlr_filter_initialized_);
+        dthb = low_pass_filter(dthb, 0.7, filtered_dthb_, dthb_filter_initialized_);
+
+        x<<s,ds,phi,dphi,thll,dthll,thlr,dthlr,thb,dthb;
+        debug_log("x:[%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf]",
+                  x[0], x[1], x[2], x[3], x[4],
+                  x[5], x[6], x[7], x[8], x[9]);
+        
+        // xd[0]=s;
+        // xd[2]=phi;
         //TODO:根据腿长拟合不同的K矩阵
 
         //u = sp.Matrix([Twl, Twr, Tbl, Tbr])
@@ -173,29 +288,30 @@ bool ControllerAT::update(float dt) {
         
         //接触状态判断
         debug_log("left_force:%lf,right_force:%lf", left_leg_force[0],right_leg_force[0]);
-        if(left_leg_force[0]>30.0&&right_leg_force[0]>30.0) //两轮接地
-        {
-            u=-K*x;
-        }
-        else if(left_leg_force[0]>30.0&&right_leg_force[0]<30.0) //左轮接地
-        {
-            u=-K_air*x;
-        }
-        else if(left_leg_force[0]<30.0&&right_leg_force[0]>30.0) //右轮接地
-        {
-            u=-K_air*x;
-        }
-        else //左右轮都没有接地
-        {
-            u=-K_air*x;
-        }
+        u=K*(xd-x);
+        // if(left_leg_force[0]>30.0&&right_leg_force[0]>30.0) //两轮接地
+        // {
+            
+        // }
+        // else if(left_leg_force[0]>30.0&&right_leg_force[0]<30.0) //左轮接地
+        // {
+        //     u=K_air*(xd-x);
+        // }
+        // else if(left_leg_force[0]<30.0&&right_leg_force[0]>30.0) //右轮接地
+        // {
+        //     u=K_air*(xd-x);
+        // }
+        // else //左右轮都没有接地
+        // {
+        //     u=K_air*(xd-x);
+        // }
 
         //腿长PD控制器
         Eigen::Vector2d left_leg_exp_force,right_leg_exp_force,left_joint_torque,right_joint_torque;
         left_leg_exp_force[1]=u[2];
         right_leg_exp_force[1]=u[3];
-        left_leg_exp_force[0]=left_leg_length.update(left_leg_pos[0],left_leg_vel[0],0.23f);
-        right_leg_exp_force[0]=left_leg_length.update(right_leg_pos[0],right_leg_vel[0],0.23f);
+        left_leg_exp_force[0]=left_leg_length.update(left_leg_pos[0],left_leg_vel[0],0.25f);
+        right_leg_exp_force[0]=right_leg_length.update(right_leg_pos[0],right_leg_vel[0],0.25f);
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 
@@ -205,6 +321,12 @@ bool ControllerAT::update(float dt) {
         rb->set_command(0.0f, 1.0f, right_joint_torque[1], 0.0f, 0.0f);
         lw->set_command(0.0f, 0.0f, u[0], 0.0f, 0.0f);
         rw->set_command(0.0f, 0.0f, u[1], 0.0f, 0.0f);
+
+
+        if(exp_state==KINAMIC_TEST)
+            state=KINAMIC_TEST;
+        else if(exp_state==IDEL)
+            state=IDEL;
     }
     return true;
 }
@@ -221,7 +343,7 @@ void ControllerAT::input(float velocity, float omega, float height, int mode) {
     }else if (mode == 3) {
         exp_state = VMC_TEST;
     }else if (mode == 4) {
-        exp_state = READY_STAND1;
+        exp_state = LQR_CTRL;
     }
 }
 
@@ -235,30 +357,30 @@ bool ControllerAT::update_lqr_k(const Eigen::Vector<float,10> &Q,const Eigen::Ve
     using Matrix10cd = Eigen::Matrix<std::complex<double>, 10, 10>;
 
     Eigen::Matrix<double, 10, 10> A;
-    A <<
+A <<
     0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
-    0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.04657099, 0.00000000, 3.62114144, 0.00000000, 0.00000000, 0.00000000,
+    0.00000000, 0.00000000, 0.00000000, 0.00000000, -13.55160363, 0.00000000, -13.55160363, 0.00000000, 0.00000000, 0.00000000,
     0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
-    0.00000000, 0.00000000, 0.00000000, 0.00000000, -82.96206979, 0.00000000, 202.45066195, 0.00000000, 0.00000000, 0.00000000,
+    0.00000000, 0.00000000, 0.00000000, 0.00000000, -2.14332607, 0.00000000, 2.14332607, 0.00000000, 0.00000000, 0.00000000,
     0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
-    0.00000000, 0.00000000, 0.00000000, 0.00000000, 128.00000000, 0.00000000, -64.00000000, 0.00000000, 0.00000000, 0.00000000,
+    0.00000000, 0.00000000, 0.00000000, 0.00000000, 213.48521397, 0.00000000, -49.86561124, 0.00000000, 0.00000000, 0.00000000,
     0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000,
-    0.00000000, 0.00000000, 0.00000000, 0.00000000, -28.00000000, 0.00000000, 192.00000000, 0.00000000, 0.00000000, 0.00000000,
+    0.00000000, 0.00000000, 0.00000000, 0.00000000, -49.86561124, 0.00000000, 213.48521397, 0.00000000, 0.00000000, 0.00000000,
     0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000,
-    0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.12321884, 0.00000000, 1.47554772, 0.00000000, -2.37621800, 0.00000000;
+    0.00000000, 0.00000000, 0.00000000, 0.00000000, 20.24352472, 0.00000000, 20.24352472, 0.00000000, -28.77747990, 0.00000000;
 
-    Matrix104d B;
-    B <<
+Eigen::Matrix<double, 10, 4> B;
+B <<
     0.00000000, 0.00000000, 0.00000000, 0.00000000,
-    -6.39170188, -51.94137680, -0.76184574, 0.32004766,
+    5.75310641, 5.75310641, -0.93168984, -0.93168984,
     0.00000000, 0.00000000, 0.00000000, 0.00000000,
-    -204.15972806, -159.77328584, 0.14716707, 18.36519794,
+    -3.99485616, 3.99485616, -0.14735637, 0.14735637,
     0.00000000, 0.00000000, 0.00000000, 0.00000000,
-    32.00000000, -96.00000000, 4.00000000, -6.00000000,
+    -71.63664239, 17.64525726, 14.67737768, -3.42832366,
     0.00000000, 0.00000000, 0.00000000, 0.00000000,
-    -96.00000000, -256.00000000, -2.25000000, 16.00000000,
+    17.64525726, -71.63664239, -3.42832366, 14.67737768,
     0.00000000, 0.00000000, 0.00000000, 0.00000000,
-    0.05734234, 0.78015583, -2.66759543, -2.64094828;
+    -2.92121265, -2.92121265, -5.28991389, -5.28991389;
 
     Matrix10d state_cost = Matrix10d::Zero();
     for (Eigen::Index i = 0; i < 10; ++i) {

@@ -107,15 +107,41 @@ public:
     }
 
     std::unique_ptr<LegCalcBase> leg_calc_;
-    RobotState state{IDEL}, exp_state{IDEL};
+    RobotState state{KINAMIC_TEST}, exp_state{KINAMIC_TEST};
     Param param;
-    PID left_leg_length,right_leg_legth;
+    PID left_leg_length,right_leg_length;
     Eigen::Matrix<double,4,10> K,K_left_air,K_right_air,K_air;
     bool update_lqr_k(const Eigen::Vector<float,10> &Q,const Eigen::Vector<float,4> &R);
     double ref_pos{0.0},ref_vel{0.0},ref_omega{0.0};
 private:
+    static double wrap_to_pi(double angle);
+    static bool extract_ypr(const Eigen::Quaternionf& orientation,
+                            double& yaw,
+                            double& pitch,
+                            double& roll);
+    static double low_pass_filter(double input,
+                                  double alpha,
+                                  double& filtered_value,
+                                  bool& initialized);
+
     DebugLogger debug_logger_;
     Slope<Eigen::Vector2d> left_leg_slope,right_leg_slope;
     bool reset_traj_generated{false};
     std::chrono::time_point<std::chrono::high_resolution_clock> time_point;
+
+    double filtered_ds_{0.0};
+    double filtered_dphi_{0.0};
+    double filtered_dthll_{0.0};
+    double filtered_dthlr_{0.0};
+    double filtered_dthb_{0.0};
+    bool ds_filter_initialized_{false};
+    bool dphi_filter_initialized_{false};
+    bool dthll_filter_initialized_{false};
+    bool dthlr_filter_initialized_{false};
+    bool dthb_filter_initialized_{false};
+
+    bool yaw_tracking_initialized_{false};
+    double yaw_previous_{0.0};
+    double yaw_unwrapped_{0.0};
+    double yaw_reference_{0.0};
 };

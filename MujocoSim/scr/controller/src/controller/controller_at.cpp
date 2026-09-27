@@ -81,9 +81,9 @@ LQRControllerAT::LQRControllerAT() {
     lf_motor_.inverse = false;
     lb_motor_.inverse = false;
     lw_motor_.inverse = false;
-    lf_motor_.inverse = false;
-    lb_motor_.inverse = false;
-    lw_motor_.inverse = false;
+    rf_motor_.inverse = false;
+    rb_motor_.inverse = false;
+    rw_motor_.inverse = false;
     lf_motor_.offset  = 1.171866325;  // angle2rad(67.143f);
     rf_motor_.offset  = 1.171866325;  // angle2rad(67.143f);
     lb_motor_.offset  = -1.136586325; // angle2rad(-65.1216f);
