@@ -2,8 +2,8 @@
 
 #include "imubase.hpp"
 #include "motorbase.hpp"
-#include "leg_calc.hpp"
 #include "controllerbase.hpp"
+#include "tools/leg_calc.hpp"
 
 #include <Eigen/Dense>
 

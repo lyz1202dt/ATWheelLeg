@@ -25,7 +25,7 @@ find_package(urdf REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 set(CORE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../Core)
-if(NOT EXISTS ${CORE_SOURCE_DIR}/src/controller.cpp)
+if(NOT EXISTS ${CORE_SOURCE_DIR}/src/controller/controller_6x.cpp)
   message(FATAL_ERROR "Core controller sources were not found at ${CORE_SOURCE_DIR}")
 endif()
 
@@ -60,11 +60,11 @@ add_library(lqr_controller SHARED
   src/controller/mujoco_sim.cpp
   src/controller/vir_imu.cpp
   src/controller/vir_motor.cpp
-  ${CORE_SOURCE_DIR}/src/controllerbase.cpp
-  ${CORE_SOURCE_DIR}/src/controller.cpp
-  ${CORE_SOURCE_DIR}/src/controller_at.cpp
-  ${CORE_SOURCE_DIR}/src/leg_calc.cpp
-  ${CORE_SOURCE_DIR}/src/pid.cpp
+  ${CORE_SOURCE_DIR}/src/controller/controller_6x.cpp
+  ${CORE_SOURCE_DIR}/src/controller/controller_at.cpp
+  ${CORE_SOURCE_DIR}/src/tools/estimater.cpp
+  ${CORE_SOURCE_DIR}/src/tools/leg_calc.cpp
+  ${CORE_SOURCE_DIR}/src/tools/pid.cpp
 )
 
 target_include_directories(lqr_controller PRIVATE

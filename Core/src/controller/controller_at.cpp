@@ -1,4 +1,4 @@
-#include "controller_at.hpp"
+#include "controller/controller_at.hpp"
 #include <algorithm>
 #include <Eigen/src/Core/Matrix.h>
 #include <cmath>
@@ -322,21 +322,6 @@ bool ControllerAT::update(uint64_t ms) {
     return true;
 }
 
-LowPassFilter::LowPassFilter(double alpha): alpha(alpha)
-{
-
-}
-
-double LowPassFilter::update(const double& input, double filter_alpha) {
-    alpha = std::clamp(std::isfinite(filter_alpha) ? filter_alpha : alpha, 0.0, 1.0);
-    filtered_value_ = (1.0 - alpha) * filtered_value_ + alpha * input;
-    return filtered_value_;
-}
-
-void LowPassFilter::reset(const double& value) {
-    filtered_value_ = value;
-    initialized_ = false;
-}
 
 void ControllerAT::input(float velocity, float omega, float height, int mode) {
     (void)velocity;

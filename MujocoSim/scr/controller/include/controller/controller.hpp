@@ -16,7 +16,7 @@
 #include <vector>
 
 #include <controllerbase.hpp>
-#include <controller.hpp>
+#include "../../../../../Core/inc/controller/controller_6x.hpp"
 
 #include "controller/vir_imu.hpp"
 #include "controller/vir_motor.hpp"

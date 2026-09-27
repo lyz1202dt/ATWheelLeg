@@ -1,4 +1,4 @@
-#include "leg_calc.hpp"
+#include "tools/leg_calc.hpp"
 
 #include <Eigen/LU>
 #include <Eigen/src/Core/Matrix.h>

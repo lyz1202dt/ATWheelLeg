@@ -5,7 +5,7 @@
 #include "QuaternionEKF.h"
 #include "adc.hpp"
 #include "gpio.hpp"
-#include "pid.hpp"
+#include "tools/pid.hpp"
 #include "spi.hpp"
 #include "tim.hpp"
 

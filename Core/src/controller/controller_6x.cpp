@@ -1,4 +1,4 @@
-#include "controller.hpp"
+#include "controller/controller_6x.hpp"
 
 #include <Eigen/Geometry>
 

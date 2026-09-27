@@ -53,11 +53,11 @@ endif()
 # Core library
 # ---------------------------------------------------------------------------
 add_library(core
-    src/controllerbase.cpp
-    src/controller.cpp
-    src/controller_at.cpp
-    src/leg_calc.cpp
-    src/pid.cpp
+    src/controller/controller_6x.cpp
+    src/controller/controller_at.cpp
+    src/tools/estimater.cpp
+    src/tools/leg_calc.cpp
+    src/tools/pid.cpp
 )
 add_library(Core::core ALIAS core)
 

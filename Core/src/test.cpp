@@ -4,7 +4,7 @@
 #include <iomanip>
 #include <iostream>
 
-#include "controller.hpp"
+#include "controller/controller_6x.hpp"
 
 namespace {
 

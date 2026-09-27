@@ -1,6 +1,6 @@
 #include "app_main.hpp"
 #include "bmi088_imu.hpp"
-#include "controller.hpp"
+#include "controller/controller_6x.hpp"
 #include "hardware.hpp"
 
 #include "motorbase.hpp"

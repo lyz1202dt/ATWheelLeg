@@ -20,12 +20,19 @@ public:
                    Motor* rb,
                    Motor* lw,
                    Motor* rw,
-                   DebugLogger debug_logger = nullptr);
+                   DebugLogger debug_logger = nullptr): imu(imu)
+    , lf(lf)
+    , rf(rf)
+    , lb(lb)
+    , rb(rb)
+    , lw(lw)
+    , rw(rw)
+    , debug_logger_(std::move(debug_logger)) {};
     virtual ~ControllerBase() = default;
 
-    virtual bool update(uint64_t ms);
-    virtual void input(float velocity, float omega, float height, int mode);
-    void set_debug_logger(DebugLogger logger);
+    virtual bool update(uint64_t ms){return true;};
+    virtual void input(float velocity, float omega, float height, int mode){};
+    void set_debug_logger(DebugLogger logger) { debug_logger_ = std::move(logger); }
 
 protected:
     template <typename... Args>

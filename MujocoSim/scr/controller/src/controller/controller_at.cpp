@@ -1,4 +1,4 @@
-#include <controller/controller_at.hpp>
+#include "../../include/controller/controller_at.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +13,7 @@
 
 #include <pluginlib/class_list_macros.hpp>
 
-#include "controller_at.hpp"
+#include "../../../../../Core/inc/controller/controller_at.hpp"
 
 namespace lqr_controller {
 
