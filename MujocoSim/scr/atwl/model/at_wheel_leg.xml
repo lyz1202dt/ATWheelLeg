@@ -87,7 +87,10 @@
                             quat="0.685146 0.185752 0.187275 0.678969" mass="0.47"
                             diaginertia="0.000399918 0.000299408 0.000297384" />
                         <joint name="left_rear2_link_left_wheel_link_joint" pos="0 0 0" axis="0 1 0" />
-                        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="left_wheel_link" />
+                        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1"
+                            mesh="left_wheel_link" contype="0" conaffinity="0" />
+                        <geom type="cylinder" pos="0 0.013 0"
+                            quat="0.70710678 0.70710678 0 0" size="0.056 0.0105" />
                     </body>
                 </body>
             </body>
@@ -153,7 +156,9 @@
                         <joint name="right_rear2_link_right_wheel_link_joint" pos="0 0 0"
                             axis="0 -1 0" />
                         <geom type="mesh" rgba="0.752941 0.752941 0.752941 1"
-                            mesh="right_wheel_link" />
+                            mesh="right_wheel_link" contype="0" conaffinity="0" />
+                        <geom type="cylinder" pos="0 -0.013 0"
+                            quat="0.70710678 0.70710678 0 0" size="0.056 0.0105" />
                     </body>
                 </body>
             </body>

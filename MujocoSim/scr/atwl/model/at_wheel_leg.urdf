@@ -424,11 +424,12 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
-        rpy="0 0 0" />
+        xyz="0 0.013 0"
+        rpy="1.5708 0 0" />
       <geometry>
-        <mesh
-          filename="left_wheel_link.STL" />
+        <cylinder
+          radius="0.056"
+          length="0.021" />
       </geometry>
     </collision>
   </link>
@@ -825,11 +826,12 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
-        rpy="0 0 0" />
+        xyz="0 -0.013 0"
+        rpy="1.5708 0 0" />
       <geometry>
-        <mesh
-          filename="right_wheel_link.STL" />
+        <cylinder
+          radius="0.056"
+          length="0.021" />
       </geometry>
     </collision>
   </link>
