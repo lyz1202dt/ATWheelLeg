@@ -30,3 +30,5 @@ at_controller:
     mode: 0
     expected_velocity: 0.0
     expected_omega: 0.0
+    q_diag: [0.1, 1.0, 0.2, 5.0, 10.0, 50.0, 10.0, 50.0, 600.0, 50.0]
+    r_diag: [0.03, 0.03, 0.1, 0.1]

@@ -77,10 +77,7 @@ public:
         VMC_TEST,     // 测试VMC功能
         READY_STAND1,   //斜坡渐变当前期望到准备站立的姿态
         READY_STAND2,   //完成小板凳形态
-        TOUCH_GROUND, // 接触地面，LQR平衡控制
-        LEFT_FLY,     // 左侧悬空，LQR左侧失控
-        RIGHT_FLAY,   // 右侧悬空，LQR右侧失控
-        ALL_FLY,      // 全部悬空，LQR仅姿态稳定
+        LQR_CTRL, // 接触地面，LQR平衡控制
     };
     struct Param{
         float motor_kp{30.0f};
@@ -113,7 +110,8 @@ public:
     RobotState state{IDEL}, exp_state{IDEL};
     Param param;
     PID left_leg_length,right_leg_legth;
-    Eigen::Matrix<double,4,10> K,K_air;
+    Eigen::Matrix<double,4,10> K,K_left_air,K_right_air,K_air;
+    bool update_lqr_k(const Eigen::Vector<float,10> &Q,const Eigen::Vector<float,4> &R);
     double ref_pos{0.0},ref_vel{0.0},ref_omega{0.0};
 private:
     DebugLogger debug_logger_;

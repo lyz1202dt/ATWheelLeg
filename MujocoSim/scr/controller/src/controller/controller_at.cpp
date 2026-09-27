@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <rclcpp/logging.hpp>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,8 @@ namespace {
 constexpr size_t kMotorCount               = 6U;
 constexpr size_t kTargetInterfacesPerMotor = 5U;
 constexpr char kReferencePrefix[]          = "mujoco_sim_controller";
+constexpr size_t kLqrStateSize             = 10U;
+constexpr size_t kLqrInputSize             = 4U;
 
 template <typename Interface>
 Interface* find_interface(std::vector<Interface>& interfaces, const std::string& name) {
@@ -29,6 +32,49 @@ Interface* find_interface(std::vector<Interface>& interfaces, const std::string&
 
 inline float rad2angle(float rad) { return rad * 180.0f / 3.14159265f; }
 inline float angle2rad(float rad) { return rad * 3.14159265f / 180.0f; }
+
+template <size_t Size>
+bool parameter_to_array(const rclcpp::Parameter& parameter,
+                        std::array<float, Size>& values,
+                        std::string& error) {
+    std::vector<double> parameter_values;
+    if (parameter.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+        parameter_values = parameter.as_double_array();
+    } else if (parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER_ARRAY) {
+        const auto integer_values = parameter.as_integer_array();
+        parameter_values.reserve(integer_values.size());
+        for (const int64_t value : integer_values) {
+            parameter_values.push_back(static_cast<double>(value));
+        }
+    } else {
+        error = parameter.get_name() + " must be a numeric array";
+        return false;
+    }
+
+    if (parameter_values.size() != Size) {
+        error = parameter.get_name() + " must contain exactly " +
+                std::to_string(Size) + " values";
+        return false;
+    }
+
+    for (size_t index = 0; index < Size; ++index) {
+        const float value = static_cast<float>(parameter_values[index]);
+        if (!std::isfinite(parameter_values[index]) || !std::isfinite(value)) {
+            error = parameter.get_name() + " contains a non-finite value";
+            return false;
+        }
+        values[index] = value;
+    }
+    return true;
+}
+
+std::string lqr_gain_to_string(const Eigen::Matrix<double, kLqrInputSize, kLqrStateSize>& gain) {
+    static const Eigen::IOFormat matrix_format(
+        Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", "\n", "[", "]", "[", "]");
+    std::ostringstream stream;
+    stream << gain.format(matrix_format);
+    return stream.str();
+}
 } // namespace
 
 LQRControllerAT::LQRControllerAT() {
@@ -44,6 +90,7 @@ LQRControllerAT::LQRControllerAT() {
     rb_motor_.offset  = -1.136586325; // angle2rad(-65.1216f);
 
     auto controller = std::make_unique<::ControllerAT>(&imu_, &lf_motor_, &rf_motor_, &lb_motor_, &rb_motor_, &lw_motor_, &rw_motor_);
+    controller_at_ = controller.get();
     controller->register_debug_logger(
         [this](const char* message) { RCLCPP_INFO(get_node()->get_logger(), "%s", message == nullptr ? "" : message); });
     controller_ = std::move(controller);
@@ -65,27 +112,16 @@ controller_interface::CallbackReturn LQRControllerAT::on_init() {
     auto_declare<int>("mode", requested_mode_);
     auto_declare<double>("expected_velocity", static_cast<double>(expected_velocity_.load(std::memory_order_relaxed)));
     auto_declare<double>("expected_omega", static_cast<double>(expected_omega_.load(std::memory_order_relaxed)));
+    auto_declare<std::vector<double>>(
+        "q_diag",
+        std::vector<double>(q_diag_.begin(), q_diag_.end()));
+    auto_declare<std::vector<double>>(
+        "r_diag",
+        std::vector<double>(r_diag_.begin(), r_diag_.end()));
 
     parameter_callback_handle_ = get_node()->add_on_set_parameters_callback(
-        [this](const std::vector<rclcpp::Parameter>& parameters) -> rcl_interfaces::msg::SetParametersResult {
-            rcl_interfaces::msg::SetParametersResult result;
-            result.successful = true;
-            for (const auto& param : parameters) {
-                const auto& param_name=param.get_name();
-                if(param_name=="expected_velocity")
-                {
-                    expected_velocity_=param.as_double();
-                }
-                else if(param_name=="expected_omega")
-                {
-                    expected_omega_=param.as_double();
-                }
-                else if(param_name=="mode")
-                {
-                    requested_mode_=param.as_int();
-                }
-            }
-            return result;
+        [this](const std::vector<rclcpp::Parameter>& parameters) {
+            return on_set_parameters(parameters);
         });
     return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -99,6 +135,12 @@ controller_interface::CallbackReturn LQRControllerAT::on_configure(const rclcpp_
     effort_limit_   = get_node()->get_parameter("effort_limit").as_double();
     requested_mode_ = get_node()->get_parameter("mode").as_int();
 
+    std::string lqr_error;
+    if (!configure_lqr_gain(lqr_error)) {
+        RCLCPP_ERROR(get_node()->get_logger(), "Failed to configure AT LQR gain: %s", lqr_error.c_str());
+        return controller_interface::CallbackReturn::ERROR;
+    }
+
     if (!std::isfinite(effort_limit_) || effort_limit_ <= 0.0 || requested_mode_ < 0 || requested_mode_ > 2
         || !imu_.configure(get_node(), imu_topic_, imu_pose_topic_)) {
         RCLCPP_ERROR(get_node()->get_logger(), "Invalid AT controller parameters or IMU configuration");
@@ -108,6 +150,38 @@ controller_interface::CallbackReturn LQRControllerAT::on_configure(const rclcpp_
     cmd_vel_subscriber_ = get_node()->create_subscription<geometry_msgs::msg::Twist>(
         cmd_vel_topic_, 10, [this](const geometry_msgs::msg::Twist& msg) { cmd_vel_callback(msg); });
     return controller_interface::CallbackReturn::SUCCESS;
+}
+
+bool LQRControllerAT::configure_lqr_gain(std::string& error) {
+    std::array<float, kLqrStateSize> q_diag;
+    std::array<float, kLqrInputSize> r_diag;
+    if (!parameter_to_array(get_node()->get_parameter("q_diag"), q_diag, error) ||
+        !parameter_to_array(get_node()->get_parameter("r_diag"), r_diag, error)) {
+        return false;
+    }
+
+    Eigen::Vector<float, kLqrStateSize> q;
+    Eigen::Vector<float, kLqrInputSize> r;
+    for (size_t index = 0; index < kLqrStateSize; ++index) {
+        q[static_cast<Eigen::Index>(index)] = q_diag[index];
+    }
+    for (size_t index = 0; index < kLqrInputSize; ++index) {
+        r[static_cast<Eigen::Index>(index)] = r_diag[index];
+    }
+
+    if (controller_at_ == nullptr || !controller_at_->update_lqr_k(q, r)) {
+        error = "ControllerAT rejected q_diag/r_diag";
+        return false;
+    }
+
+    RCLCPP_INFO(
+        get_node()->get_logger(),
+        "AT LQR K matrix configured:\n%s",
+        lqr_gain_to_string(controller_at_->K).c_str());
+
+    q_diag_ = q_diag;
+    r_diag_ = r_diag;
+    return true;
 }
 
 controller_interface::CallbackReturn LQRControllerAT::on_activate(const rclcpp_lifecycle::State& previous_state) {
@@ -208,6 +282,65 @@ void LQRControllerAT::cmd_vel_callback(const geometry_msgs::msg::Twist& msg) {
     if (std::isfinite(msg.angular.z)) {
         expected_omega_.store(static_cast<float>(msg.angular.z), std::memory_order_relaxed);
     }
+}
+
+rcl_interfaces::msg::SetParametersResult LQRControllerAT::on_set_parameters(
+    const std::vector<rclcpp::Parameter>& parameters) {
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+
+    auto q_diag = q_diag_;
+    auto r_diag = r_diag_;
+    bool lqr_weights_changed = false;
+    std::string error;
+
+    for (const auto& parameter : parameters) {
+        const auto& parameter_name = parameter.get_name();
+        if (parameter_name == "q_diag") {
+            if (!parameter_to_array(parameter, q_diag, error)) {
+                result.successful = false;
+                result.reason = error;
+                return result;
+            }
+            lqr_weights_changed = true;
+        } else if (parameter_name == "r_diag") {
+            if (!parameter_to_array(parameter, r_diag, error)) {
+                result.successful = false;
+                result.reason = error;
+                return result;
+            }
+            lqr_weights_changed = true;
+        } else if (parameter_name == "expected_velocity") {
+            expected_velocity_ = static_cast<float>(parameter.as_double());
+        } else if (parameter_name == "expected_omega") {
+            expected_omega_ = static_cast<float>(parameter.as_double());
+        } else if (parameter_name == "mode") {
+            requested_mode_ = static_cast<int>(parameter.as_int());
+        }
+    }
+
+    if (lqr_weights_changed) {
+        Eigen::Vector<float, kLqrStateSize> q;
+        Eigen::Vector<float, kLqrInputSize> r;
+        for (size_t index = 0; index < kLqrStateSize; ++index) {
+            q[static_cast<Eigen::Index>(index)] = q_diag[index];
+        }
+        for (size_t index = 0; index < kLqrInputSize; ++index) {
+            r[static_cast<Eigen::Index>(index)] = r_diag[index];
+        }
+
+        if (controller_at_ == nullptr || !controller_at_->update_lqr_k(q, r)) {
+            result.successful = false;
+            result.reason = "ControllerAT rejected q_diag/r_diag";
+            RCLCPP_ERROR(get_node()->get_logger(), "%s", result.reason.c_str());
+            return result;
+        }
+        q_diag_ = q_diag;
+        r_diag_ = r_diag;
+        RCLCPP_INFO(get_node()->get_logger(), "AT LQR gain updated from q_diag/r_diag");
+    }
+
+    return result;
 }
 
 

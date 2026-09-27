@@ -18,6 +18,8 @@
 #include "controller/vir_motor.hpp"
 #include "controllerbase.hpp"
 
+class ControllerAT;
+
 namespace lqr_controller {
 
 class LQRControllerAT final : public controller_interface::ControllerInterface {
@@ -45,6 +47,7 @@ private:
     static constexpr size_t kMotorCount = 6U;
 
     bool bind_motor_interfaces();
+    bool configure_lqr_gain(std::string& error);
     bool read_motor_states();
     void cmd_vel_callback(const geometry_msgs::msg::Twist& msg);
     rcl_interfaces::msg::SetParametersResult on_set_parameters(
@@ -61,6 +64,7 @@ private:
     // The ROS wrapper talks to ControllerAT through ControllerBase so the
     // concrete core controller can be replaced without changing the wrapper.
     std::unique_ptr<::ControllerBase> controller_;
+    ::ControllerAT* controller_at_{nullptr};
 
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
         cmd_vel_subscriber_;
@@ -81,6 +85,9 @@ private:
     std::string imu_topic_{"/imu_imu_sensor/imu"};
     std::string imu_pose_topic_{"/imu_pose_sensor/pose"};
     std::string cmd_vel_topic_{"/cmd_vel"};
+    std::array<float, 10> q_diag_ = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+                                     1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<float, 4> r_diag_ = {1.0F, 1.0F, 1.0F, 1.0F};
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
         parameter_callback_handle_;
 };
