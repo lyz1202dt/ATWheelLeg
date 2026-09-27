@@ -57,6 +57,7 @@ add_library(core
     src/controller/controller_at.cpp
     src/tools/estimater.cpp
     src/tools/leg_calc.cpp
+    src/tools/lqr_calc.cpp
     src/tools/pid.cpp
 )
 add_library(Core::core ALIAS core)

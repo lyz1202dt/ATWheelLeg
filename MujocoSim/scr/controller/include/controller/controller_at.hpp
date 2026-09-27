@@ -12,12 +12,14 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "controller/vir_imu.hpp"
 #include "controller/vir_motor.hpp"
 #include "controllerbase.hpp"
+#include "tools/lqr_calc.hpp"
 
 class ControllerAT;
 
@@ -47,7 +49,9 @@ public:
 private:
     static constexpr size_t kMotorCount = 6U;
 
-    bool update_lqr_k(const Eigen::Vector<float, 10>& Q,const Eigen::Vector<float, 4>& R);
+    bool update_lqr_k(const std::array<float, 10>& q_diag,
+                      const std::array<float, 4>& r_diag,
+                      std::string& error);
     bool bind_motor_interfaces();
     bool configure_lqr_gain(std::string& error);
     bool read_motor_states();
@@ -65,8 +69,9 @@ private:
 
     // The ROS wrapper talks to ControllerAT through ControllerBase so the
     // concrete core controller can be replaced without changing the wrapper.
-    std::unique_ptr<::ControllerBase> controller_;
-    ::ControllerAT* controller_at_{nullptr};
+    std::unique_ptr<ControllerBase> controller_;
+    ControllerAT* controller_at_{nullptr};
+    LQRCalc lqr_calc_;
 
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
         cmd_vel_subscriber_;
@@ -91,6 +96,7 @@ private:
                                      1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
     std::array<float, 4> r_diag_ = {1.0F, 1.0F, 1.0F, 1.0F};
     Eigen::Matrix<double, 4, 10> K_ = Eigen::Matrix<double, 4, 10>::Zero();
+    mutable std::mutex gain_mutex_;
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
         parameter_callback_handle_;
 };

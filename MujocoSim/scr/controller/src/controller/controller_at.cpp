@@ -1,10 +1,7 @@
 #include "../../include/controller/controller_at.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <complex>
-#include <limits>
 #include <memory>
 #include <rclcpp/logging.hpp>
 #include <sstream>
@@ -24,6 +21,38 @@ constexpr size_t kTargetInterfacesPerMotor = 5U;
 constexpr char kReferencePrefix[]          = "mujoco_sim_controller";
 constexpr size_t kLqrStateSize             = 10U;
 constexpr size_t kLqrInputSize             = 4U;
+
+Eigen::MatrixXd make_lqr_at_a()
+{
+    Eigen::MatrixXd a(10, 10);
+    a << 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000, -13.55160363, 0.00000000, -13.55160363, 0.00000000, 0.00000000, 0.00000000,
+         0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000, -2.14332607, 0.00000000, 2.14332607, 0.00000000, 0.00000000, 0.00000000,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000, 213.48521397, 0.00000000, -49.86561124, 0.00000000, 0.00000000, 0.00000000,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000, -49.86561124, 0.00000000, 213.48521397, 0.00000000, 0.00000000, 0.00000000,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000, 20.24352472, 0.00000000, 20.24352472, 0.00000000, -28.77747990, 0.00000000;
+    return a;
+}
+
+Eigen::MatrixXd make_lqr_at_b()
+{
+    Eigen::MatrixXd b(10, 4);
+    b << 0.00000000, 0.00000000, 0.00000000, 0.00000000,
+         5.75310641, 5.75310641, -0.93168984, -0.93168984,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000,
+         -3.99485616, 3.99485616, -0.14735637, 0.14735637,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000,
+         -71.63664239, 17.64525726, 14.67737768, -3.42832366,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000,
+         17.64525726, -71.63664239, -3.42832366, 14.67737768,
+         0.00000000, 0.00000000, 0.00000000, 0.00000000,
+         -2.92121265, -2.92121265, -5.28991389, -5.28991389;
+    return b;
+}
 
 template <typename Interface>
 Interface* find_interface(std::vector<Interface>& interfaces, const std::string& name) {
@@ -79,7 +108,8 @@ std::string lqr_gain_to_string(const Eigen::Matrix<double, kLqrInputSize, kLqrSt
 }
 } // namespace
 
-LQRControllerAT::LQRControllerAT() {
+LQRControllerAT::LQRControllerAT()
+    : lqr_calc_(make_lqr_at_a(), make_lqr_at_b()) {
     lf_motor_.inverse = false;
     lb_motor_.inverse = false;
     lw_motor_.inverse = false;
@@ -93,10 +123,11 @@ LQRControllerAT::LQRControllerAT() {
 
     auto gain_scheduler = [this](const double& left_leg_length,
                                  const double& right_leg_length,
-                                 Eigen::Matrix<double, 4, 10>& gain) {
+        Eigen::Matrix<double, 4, 10>& gain) {
         (void)left_leg_length;
         (void)right_leg_length;
 
+        std::lock_guard<std::mutex> lock(gain_mutex_);
         if (!K_.allFinite()) {
             return false;
         }
@@ -157,7 +188,7 @@ controller_interface::CallbackReturn LQRControllerAT::on_configure(const rclcpp_
         return controller_interface::CallbackReturn::ERROR;
     }
 
-    if (!std::isfinite(effort_limit_) || effort_limit_ <= 0.0 || requested_mode_ < 0 || requested_mode_ > 2
+    if (!std::isfinite(effort_limit_) || effort_limit_ <= 0.0 || requested_mode_ < 0 || requested_mode_ > 4
         || !imu_.configure(get_node(), imu_topic_, imu_pose_topic_)) {
         RCLCPP_ERROR(get_node()->get_logger(), "Invalid AT controller parameters or IMU configuration");
         return controller_interface::CallbackReturn::ERROR;
@@ -176,16 +207,7 @@ bool LQRControllerAT::configure_lqr_gain(std::string& error) {
         return false;
     }
 
-    Eigen::Vector<float, kLqrStateSize> q;
-    Eigen::Vector<float, kLqrInputSize> r;
-    for (size_t index = 0; index < kLqrStateSize; ++index) {
-        q[static_cast<Eigen::Index>(index)] = q_diag[index];
-    }
-    for (size_t index = 0; index < kLqrInputSize; ++index) {
-        r[static_cast<Eigen::Index>(index)] = r_diag[index];
-    }
-
-    if (controller_at_ == nullptr || !update_lqr_k(q, r)) {
+    if (!update_lqr_k(q_diag, r_diag, error)) {
         error = "ControllerAT rejected q_diag/r_diag";
         return false;
     }
@@ -232,8 +254,10 @@ controller_interface::return_type LQRControllerAT::update(const rclcpp::Time& ti
 
     controller_->input(
         expected_velocity_.load(std::memory_order_relaxed), expected_omega_.load(std::memory_order_relaxed), 0.2F, requested_mode_);
-    controller_->update(static_cast<uint64_t>(time.nanoseconds() / 1000000LL));
-    return controller_interface::return_type::OK;
+    const bool valid = controller_->update(
+        static_cast<uint64_t>(time.nanoseconds() / 1000000LL));
+    return valid ? controller_interface::return_type::OK
+                 : controller_interface::return_type::ERROR;
 }
 
 controller_interface::InterfaceConfiguration LQRControllerAT::command_interface_configuration() const {
@@ -336,24 +360,18 @@ rcl_interfaces::msg::SetParametersResult LQRControllerAT::on_set_parameters(
     }
 
     if (lqr_weights_changed) {
-        Eigen::Vector<float, kLqrStateSize> q;
-        Eigen::Vector<float, kLqrInputSize> r;
-        for (size_t index = 0; index < kLqrStateSize; ++index) {
-            q[static_cast<Eigen::Index>(index)] = q_diag[index];
-        }
-        for (size_t index = 0; index < kLqrInputSize; ++index) {
-            r[static_cast<Eigen::Index>(index)] = r_diag[index];
-        }
-
-        if (controller_at_ == nullptr || !update_lqr_k(q, r)) {
+        std::string update_error;
+        if (!update_lqr_k(q_diag, r_diag, update_error)) {
             result.successful = false;
-            result.reason = "ControllerAT rejected q_diag/r_diag";
+            result.reason = update_error.empty()
+                                ? "ControllerAT rejected q_diag/r_diag"
+                                : update_error;
             RCLCPP_ERROR(get_node()->get_logger(), "%s", result.reason.c_str());
             return result;
         }
         q_diag_ = q_diag;
         r_diag_ = r_diag;
-            RCLCPP_INFO(
+        RCLCPP_INFO(
             get_node()->get_logger(),
             "AT LQR K matrix updated from q_diag/r_diag:\n%s",
             lqr_gain_to_string(K_).c_str());
@@ -363,130 +381,37 @@ rcl_interfaces::msg::SetParametersResult LQRControllerAT::on_set_parameters(
 }
 
 
-bool LQRControllerAT::update_lqr_k(const Eigen::Vector<float, 10>& Q,
-                                const Eigen::Vector<float, 4>& R) {
-    using Matrix10d  = Eigen::Matrix<double, 10, 10>;
-    using Matrix4d   = Eigen::Matrix<double, 4, 4>;
-    using Matrix20d  = Eigen::Matrix<double, 20, 20>;
-    using Matrix10cd = Eigen::Matrix<std::complex<double>, 10, 10>;
-
-    Matrix10d A;
-    A <<
-        0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000, -13.55160363, 0.00000000, -13.55160363, 0.00000000, 0.00000000, 0.00000000,
-        0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000, -2.14332607, 0.00000000, 2.14332607, 0.00000000, 0.00000000, 0.00000000,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000, 213.48521397, 0.00000000, -49.86561124, 0.00000000, 0.00000000, 0.00000000,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000, -49.86561124, 0.00000000, 213.48521397, 0.00000000, 0.00000000, 0.00000000,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000, 20.24352472, 0.00000000, 20.24352472, 0.00000000, -28.77747990, 0.00000000;
-
-    Eigen::Matrix<double, 10, 4> B;
-    B <<
-        0.00000000, 0.00000000, 0.00000000, 0.00000000,
-        5.75310641, 5.75310641, -0.93168984, -0.93168984,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000,
-        -3.99485616, 3.99485616, -0.14735637, 0.14735637,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000,
-        -71.63664239, 17.64525726, 14.67737768, -3.42832366,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000,
-        17.64525726, -71.63664239, -3.42832366, 14.67737768,
-        0.00000000, 0.00000000, 0.00000000, 0.00000000,
-        -2.92121265, -2.92121265, -5.28991389, -5.28991389;
-
-    Matrix10d state_cost = Matrix10d::Zero();
-    for (Eigen::Index index = 0; index < 10; ++index) {
-        const double weight = static_cast<double>(Q[index]);
-        if (!std::isfinite(weight) || weight < 0.0) {
-            return false;
-        }
-        state_cost(index, index) = weight;
+bool LQRControllerAT::update_lqr_k(const std::array<float, 10>& q_diag,
+                                    const std::array<float, 4>& r_diag,
+                                    std::string& error) {
+    LQRCalc::Vector q_vector(static_cast<Eigen::Index>(q_diag.size()));
+    LQRCalc::Vector r_vector(static_cast<Eigen::Index>(r_diag.size()));
+    for (std::size_t index = 0; index < q_diag.size(); ++index) {
+        q_vector[static_cast<Eigen::Index>(index)] = q_diag[index];
+    }
+    for (std::size_t index = 0; index < r_diag.size(); ++index) {
+        r_vector[static_cast<Eigen::Index>(index)] = r_diag[index];
     }
 
-    Matrix4d input_cost_inverse = Matrix4d::Zero();
-    for (Eigen::Index index = 0; index < 4; ++index) {
-        const double weight = static_cast<double>(R[index]);
-        if (!std::isfinite(weight) || weight <= 0.0) {
-            return false;
-        }
-        input_cost_inverse(index, index) = 1.0 / weight;
+    LQRCalc::Matrix calculated_gain;
+    if (!lqr_calc_.calculate(q_vector, r_vector, calculated_gain, error)) {
+        return false;
     }
-
-    Matrix20d hamiltonian = Matrix20d::Zero();
-    hamiltonian.template block<10, 10>(0, 0) = A;
-    hamiltonian.template block<10, 10>(0, 10) =
-        -B * input_cost_inverse * B.transpose();
-    hamiltonian.template block<10, 10>(10, 0) = -state_cost;
-    hamiltonian.template block<10, 10>(10, 10) = -A.transpose();
-
-    Eigen::ComplexEigenSolver<Matrix20d> eigen_solver(hamiltonian);
-    if (eigen_solver.info() != Eigen::Success) {
+    if (calculated_gain.rows() != 4 || calculated_gain.cols() != 10) {
+        error = "10-state LQR calculator returned a gain with invalid dimensions";
         return false;
     }
 
-    const auto eigenvalues = eigen_solver.eigenvalues();
-    const auto eigenvectors = eigen_solver.eigenvectors();
-    std::array<int, 10> stable_indices{};
-    Eigen::Index stable_count = 0;
-    for (Eigen::Index index = 0; index < eigenvalues.size(); ++index) {
-        if (eigenvalues[index].real() < -1.0e-8) {
-            if (stable_count >= static_cast<Eigen::Index>(stable_indices.size())) {
-                return false;
-            }
-            stable_indices[static_cast<std::size_t>(stable_count++)] =
-                static_cast<int>(index);
-        }
-    }
-
-    if (stable_count != 10) {
-        return false;
-    }
-
-    Matrix10cd u1;
-    Matrix10cd u2;
-    for (Eigen::Index column = 0; column < 10; ++column) {
-        u1.col(column) =
-            eigenvectors.template block<10, 1>(0, stable_indices[column]);
-        u2.col(column) =
-            eigenvectors.template block<10, 1>(10, stable_indices[column]);
-    }
-
-    const auto u1_decomposition = u1.fullPivLu();
-    if (!u1_decomposition.isInvertible()) {
-        return false;
-    }
-
-    const Matrix10cd p_complex = u2 * u1.inverse();
-    const double max_imaginary = p_complex.imag().cwiseAbs().maxCoeff();
-    if (!std::isfinite(max_imaginary) || max_imaginary > 1.0e-5) {
-        return false;
-    }
-
-    Matrix10d p = p_complex.real();
-    p = 0.5 * (p + p.transpose());
-
-    const Eigen::Matrix<double, 4, 10> gain =
-        input_cost_inverse * B.transpose() * p;
+    const Eigen::Matrix<double, 4, 10> gain = calculated_gain;
     if (!gain.allFinite()) {
+        error = "Computed AT LQR gain contains a non-finite value";
         return false;
     }
 
-    const Matrix10d residual =
-        A.transpose() * p + p * A -
-        p * B * input_cost_inverse * B.transpose() * p + state_cost;
-    const double residual_norm = residual.norm();
-    const double residual_scale =
-        1.0 + state_cost.norm() + A.norm() * p.norm() +
-        (p * B * input_cost_inverse * B.transpose() * p).norm();
-    if (!std::isfinite(residual_norm) ||
-        !std::isfinite(residual_scale) ||
-        residual_norm > 1.0e-6 * residual_scale) {
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(gain_mutex_);
+        K_ = gain;
     }
-
-    K_ = gain;
     return true;
 }
 

@@ -2,6 +2,7 @@
 #include "bmi088_imu.hpp"
 #include "controller/controller_6x.hpp"
 #include "hardware.hpp"
+#include "tools/lqr_calc.hpp"
 
 #include "motorbase.hpp"
 
@@ -11,6 +12,34 @@
 #include <array>
 #include <cstdint>
 #include <string>
+
+namespace {
+
+Eigen::MatrixXd make_lqr_a()
+{
+    Eigen::MatrixXd a(6, 6);
+    a << 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+         0.0, 0.0, -13.9285, 0.0, 0.6373, 0.0,
+         0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 98.2488, 0.0, 17.6903, 0.0,
+         0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+         0.0, 0.0, 0.0, 44.9938, 0.0, 54.3689;
+    return a;
+}
+
+Eigen::MatrixXd make_lqr_b()
+{
+    Eigen::MatrixXd b(6, 2);
+    b << 0.0, 0.0,
+         15.4595, -3.3942,
+         0.0, 0.0,
+         -65.5078, 39.5039,
+         0.0, 0.0,
+         -7.9383, 50.5446;
+    return b;
+}
+
+} // namespace
 
 TaskHandle_t imu_task_handle;
 TaskHandle_t motor_task_handle;
@@ -43,6 +72,35 @@ Motor* rw_motor = nullptr;
 IMUBase* imu    = &bmi088_imu;
 Controller* lqr_controller=nullptr;
 ControllerBase* controller = nullptr;
+LQRCalc lqr_calc(make_lqr_a(), make_lqr_b());
+LqrGainMatrix lqr_gain = LqrGainMatrix::Zero();
+
+bool provide_lqr_gain(double, LqrGainMatrix& gain)
+{
+    gain = lqr_gain;
+    return gain.allFinite();
+}
+
+bool update_lqr_gain()
+{
+    LQRCalc::Vector q_diag(6);
+    LQRCalc::Vector r_diag(2);
+    for (Eigen::Index index = 0; index < 6; ++index) {
+        q_diag[index] = static_cast<double>(lqr_q_diag[index]);
+    }
+    for (Eigen::Index index = 0; index < 2; ++index) {
+        r_diag[index] = static_cast<double>(lqr_r_diag[index]);
+    }
+
+    LQRCalc::Matrix calculated_gain;
+    std::string error;
+    if (!lqr_calc.calculate(q_diag, r_diag, calculated_gain, error) ||
+        calculated_gain.rows() != 2 || calculated_gain.cols() != 6) {
+        return false;
+    }
+    lqr_gain = calculated_gain;
+    return lqr_gain.allFinite();
+}
 
 void app_main(void) {
     //硬件外设初始化
@@ -54,7 +112,16 @@ void app_main(void) {
     bmi088_imu.init();
 
     //创建控制器
-    lqr_controller=new Controller(imu, lf_motor, rf_motor, lb_motor, rb_motor, lw_motor, rw_motor);
+    (void)update_lqr_gain();
+    lqr_controller = new Controller(
+        imu,
+        lf_motor,
+        rf_motor,
+        lb_motor,
+        rb_motor,
+        lw_motor,
+        rw_motor,
+        provide_lqr_gain);
     controller=lqr_controller;
 
     //创建任务
@@ -109,22 +176,12 @@ void ControlTask(void* param) {
 void LqrTask(void* param) {
     (void)param;
     uint32_t consumed_request = 0U;
-    lqr_controller->use_k_tab(true);
     for (;;) {
         const uint32_t request = lqr_gain_update_request;
         if (controller != nullptr && request != consumed_request) {
-            std::array<double, 6> q_diag{};
-            std::array<double, 2> r_diag{};
-            for (uint32_t index = 0U; index < 6U; ++index) {
-                q_diag[index] = static_cast<double>(lqr_q_diag[index]);
+            if (update_lqr_gain()) {
+                consumed_request = request;
             }
-            for (uint32_t index = 0U; index < 2U; ++index) {
-                r_diag[index] = static_cast<double>(lqr_r_diag[index]);
-            }
-
-            std::string error;
-            lqr_controller->update_lqr_gain(q_diag, r_diag, error);
-            consumed_request = request;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }

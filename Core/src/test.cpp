@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "controller/controller_6x.hpp"
+#include "tools/lqr_calc.hpp"
 
 namespace {
 
@@ -208,13 +209,36 @@ int main()
         return 1;
     }
 
-    Controller controller(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    Eigen::MatrixXd a(2, 2);
+    a << 0.0, 1.0,
+         -1.0, -1.0;
+    Eigen::MatrixXd b(2, 1);
+    b << 0.0, 1.0;
+    LQRCalc lqr_calc(a, b);
+    Eigen::VectorXd q(2);
+    q << 1.0, 1.0;
+    Eigen::VectorXd r(1);
+    r << 1.0;
+    Eigen::MatrixXd gain;
     std::string error;
-    if (!controller.update_lqr_gain(
-            {1.0, 1.0, 10.0, 1.0, 1.0, 1.0}, {1.0, 1.0}, error)) {
-        std::cerr << "LQR gain update failed: " << error << '\n';
+    if (!lqr_calc.calculate(q, r, gain, error) ||
+        gain.rows() != 1 || gain.cols() != 2 || !gain.allFinite()) {
+        std::cerr << "LQR calculation failed: " << error << '\n';
         return 1;
     }
+
+    Controller controller(
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        [](double, LqrGainMatrix& provider_gain) {
+            provider_gain.setZero();
+            return true;
+        });
 
     std::cout << "Core checks passed\n";
     return 0;

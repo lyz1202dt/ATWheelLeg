@@ -4,6 +4,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <pluginlib/class_list_macros.hpp>
@@ -15,6 +16,30 @@ namespace {
 constexpr size_t kMotorCount = 6U;
 constexpr size_t kTargetInterfacesPerMotor = 5U;
 constexpr char kReferencePrefix[] = "mujoco_sim_controller";
+
+Eigen::MatrixXd make_lqr_a()
+{
+    Eigen::MatrixXd a(6, 6);
+    a << 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+         0.0, 0.0, -13.9285, 0.0, 0.6373, 0.0,
+         0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 98.2488, 0.0, 17.6903, 0.0,
+         0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+         0.0, 0.0, 0.0, 44.9938, 0.0, 54.3689;
+    return a;
+}
+
+Eigen::MatrixXd make_lqr_b()
+{
+    Eigen::MatrixXd b(6, 2);
+    b << 0.0, 0.0,
+         15.4595, -3.3942,
+         0.0, 0.0,
+         -65.5078, 39.5039,
+         0.0, 0.0,
+         -7.9383, 50.5446;
+    return b;
+}
 
 template <typename Interface>
 Interface* find_interface(std::vector<Interface>& interfaces,
@@ -88,16 +113,24 @@ bool numeric_array_parameter(const rclcpp::Parameter& parameter,
 }  // namespace
 
 LQRController::LQRController()
+    : lqr_calc_(make_lqr_a(), make_lqr_b())
 {
-    lqr_controller_ = std::make_unique<::Controller>(
+    auto gain_provider = [this](double leg_length, LqrGainMatrix& gain) {
+        return get_lqr_gain(leg_length, gain);
+    };
+
+    auto controller = std::make_unique<::Controller>(
         &imu_,
         &lf_motor_,
         &rf_motor_,
         &lb_motor_,
         &rb_motor_,
         &lw_motor_,
-        &rw_motor_);
-    controller_ = lqr_controller_.get();
+        &rw_motor_,
+        std::move(gain_provider));
+    controller_impl_ = controller.get();
+    controller_ = controller.get();
+    lqr_controller_ = std::move(controller);
 }
 
 controller_interface::CallbackReturn LQRController::on_init()
@@ -201,8 +234,21 @@ controller_interface::CallbackReturn LQRController::on_configure(
             configuration_error.c_str());
         return controller_interface::CallbackReturn::ERROR;
     }
-        imu_.configure(get_node(), imu_topic_, imu_pose_topic_);
-        configure_controller(configuration_error);
+
+    if (!imu_.configure(get_node(), imu_topic_, imu_pose_topic_)) {
+        RCLCPP_ERROR(
+            get_node()->get_logger(),
+            "Failed to configure IMU topics");
+        return controller_interface::CallbackReturn::ERROR;
+    }
+
+    if (!configure_controller(configuration_error)) {
+        RCLCPP_ERROR(
+            get_node()->get_logger(),
+            "Failed to configure controller: %s",
+            configuration_error.c_str());
+        return controller_interface::CallbackReturn::ERROR;
+    }
 
     cmd_vel_subscriber_ = get_node()->create_subscription<geometry_msgs::msg::Twist>(
         cmd_vel_topic_,
@@ -265,8 +311,10 @@ controller_interface::return_type LQRController::update(
         expected_omega_.load(std::memory_order_relaxed),
         static_cast<float>(controller_params_.leg_exp_length),
         requested_mode_);
-    (void)controller_->update(static_cast<uint64_t>(time.nanoseconds() / 1000000LL));
-    return controller_interface::return_type::OK;
+    const bool valid = controller_->update(
+        static_cast<uint64_t>(time.nanoseconds() / 1000000LL));
+    return valid ? controller_interface::return_type::OK
+                 : controller_interface::return_type::ERROR;
 }
 
 controller_interface::InterfaceConfiguration
@@ -352,16 +400,21 @@ bool LQRController::bind_motor_interfaces()
 
 bool LQRController::configure_controller(std::string& error)
 {
-    if (lqr_controller_ == nullptr) {
+    if (controller_impl_ == nullptr) {
         error = "LQR controller is not initialized";
         return false;
     }
 
-    if (!lqr_controller_->set_params(controller_params_)) {
+    if (!controller_impl_->set_params(controller_params_)) {
         error = "invalid controller parameters";
         return false;
     }
 
+    return configure_lqr_gain(error);
+}
+
+bool LQRController::configure_lqr_gain(std::string& error)
+{
     LqrStateWeight q_diag;
     LqrInputWeight r_diag;
     if (!parameter_to_array(
@@ -370,22 +423,144 @@ bool LQRController::configure_controller(std::string& error)
             get_node()->get_parameter("r_diag"), r_diag, error)) {
         return false;
     }
-    if (!lqr_controller_->update_lqr_gain(q_diag, r_diag, error)) {
-        return false;
-    }
-    if (use_k_tab_ &&
-        !lqr_controller_->set_gain_table(gain_lengths_, gain_values_, error)) {
-        return false;
-    }
-    if (!use_k_tab_ &&
-        (!gain_lengths_.empty() || !gain_values_.empty()) &&
-        !lqr_controller_->set_gain_table(gain_lengths_, gain_values_, error)) {
-        return false;
-    }
-    lqr_controller_->use_k_tab(use_k_tab_);
 
-    q_diag_ = q_diag;
-    r_diag_ = r_diag;
+    LQRCalc::Vector q_vector(static_cast<Eigen::Index>(q_diag.size()));
+    LQRCalc::Vector r_vector(static_cast<Eigen::Index>(r_diag.size()));
+    for (std::size_t index = 0; index < q_diag.size(); ++index) {
+        q_vector[static_cast<Eigen::Index>(index)] = q_diag[index];
+    }
+    for (std::size_t index = 0; index < r_diag.size(); ++index) {
+        r_vector[static_cast<Eigen::Index>(index)] = r_diag[index];
+    }
+
+    LQRCalc::Matrix calculated_gain;
+    if (!lqr_calc_.calculate(q_vector, r_vector, calculated_gain, error)) {
+        return false;
+    }
+
+    if (calculated_gain.rows() != 2 || calculated_gain.cols() != 6) {
+        error = "6-state LQR calculator returned a gain with invalid dimensions";
+        return false;
+    }
+
+    LqrGainMatrix online_gain;
+    online_gain = calculated_gain;
+
+    std::vector<std::pair<double, LqrGainMatrix>> gain_table;
+    if (use_k_tab_ || !gain_lengths_.empty() || !gain_values_.empty()) {
+        if (!build_gain_table(gain_lengths_, gain_values_, gain_table, error)) {
+            return false;
+        }
+    }
+    if (use_k_tab_ && gain_table.empty()) {
+        error = "K.lengths and K.values are required when use_k_tab is true";
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(gain_mutex_);
+        online_gain_ = online_gain;
+        gain_table_ = std::move(gain_table);
+        q_diag_ = q_diag;
+        r_diag_ = r_diag;
+    }
+    return true;
+}
+
+bool LQRController::get_lqr_gain(double leg_length, LqrGainMatrix& gain) const
+{
+    if (!std::isfinite(leg_length)) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(gain_mutex_);
+    if (!use_k_tab_) {
+        gain = online_gain_;
+        return gain.allFinite();
+    }
+    if (gain_table_.empty()) {
+        return false;
+    }
+
+    if (leg_length <= gain_table_.front().first ||
+        gain_table_.size() == 1U) {
+        gain = gain_table_.front().second;
+    } else if (leg_length >= gain_table_.back().first) {
+        gain = gain_table_.back().second;
+    } else {
+        const auto upper = std::lower_bound(
+            gain_table_.begin(),
+            gain_table_.end(),
+            leg_length,
+            [](const auto& entry, double length) {
+                return entry.first < length;
+            });
+        const auto lower = std::prev(upper);
+        const double ratio =
+            (leg_length - lower->first) / (upper->first - lower->first);
+        gain = (1.0 - ratio) * lower->second + ratio * upper->second;
+    }
+    return gain.allFinite();
+}
+
+bool LQRController::build_gain_table(
+    const std::vector<double>& lengths,
+    const std::vector<double>& values,
+    std::vector<std::pair<double, LqrGainMatrix>>& table,
+    std::string& error) const
+{
+    error.clear();
+    if (lengths.empty()) {
+        error = "K.lengths must contain at least one leg length";
+        return false;
+    }
+    if (values.size() != lengths.size() * 12U) {
+        error = "K.values must contain exactly 12 values for each K.lengths entry";
+        return false;
+    }
+
+    table.clear();
+    table.reserve(lengths.size());
+    for (std::size_t entry_index = 0; entry_index < lengths.size();
+         ++entry_index) {
+        const double length = lengths[entry_index];
+        if (!std::isfinite(length)) {
+            error = "K.lengths contains a non-finite value";
+            table.clear();
+            return false;
+        }
+
+        LqrGainMatrix gain;
+        for (std::size_t row = 0; row < 2U; ++row) {
+            for (std::size_t column = 0; column < 6U; ++column) {
+                const std::size_t value_index =
+                    entry_index * 12U + row * 6U + column;
+                const double value = values[value_index];
+                if (!std::isfinite(value)) {
+                    error = "K.values contains a non-finite value";
+                    table.clear();
+                    return false;
+                }
+                gain(static_cast<Eigen::Index>(row),
+                     static_cast<Eigen::Index>(column)) = value;
+            }
+        }
+        table.emplace_back(length, gain);
+    }
+
+    std::sort(
+        table.begin(),
+        table.end(),
+        [](const auto& lhs, const auto& rhs) {
+            return lhs.first < rhs.first;
+        });
+    for (std::size_t index = 1; index < table.size(); ++index) {
+        if (table[index].first <= table[index - 1U].first) {
+            error = "K.lengths entries must be unique";
+            table.clear();
+            return false;
+        }
+    }
     return true;
 }
 
@@ -422,6 +597,7 @@ rcl_interfaces::msg::SetParametersResult LQRController::on_set_parameters(
     bool lqr_weights_changed = false;
     bool gain_table_changed = false;
     bool use_k_tab_changed = false;
+    LqrGainMatrix calculated_online_gain = LqrGainMatrix::Zero();
     std::string error;
 
     for (const auto& parameter : parameters) {
@@ -464,42 +640,67 @@ rcl_interfaces::msg::SetParametersResult LQRController::on_set_parameters(
         }
     }
 
-    if (lqr_weights_changed &&
-        (lqr_controller_ == nullptr ||
-         !lqr_controller_->update_lqr_gain(q_diag, r_diag, error))) {
-        result.successful = false;
-        result.reason = error;
-        RCLCPP_ERROR(
-            get_node()->get_logger(), "Failed to update LQR gain: %s",
-            error.c_str());
-        return result;
-    }
+    if (lqr_weights_changed) {
+        LQRCalc::Vector q_vector(static_cast<Eigen::Index>(q_diag.size()));
+        LQRCalc::Vector r_vector(static_cast<Eigen::Index>(r_diag.size()));
+        for (std::size_t index = 0; index < q_diag.size(); ++index) {
+            q_vector[static_cast<Eigen::Index>(index)] = q_diag[index];
+        }
+        for (std::size_t index = 0; index < r_diag.size(); ++index) {
+            r_vector[static_cast<Eigen::Index>(index)] = r_diag[index];
+        }
 
-    if ((gain_table_changed || use_k_tab) &&
-        (lqr_controller_ == nullptr ||
-         !lqr_controller_->set_gain_table(gain_lengths, gain_values, error))) {
-        result.successful = false;
-        result.reason = error;
-        RCLCPP_ERROR(
-            get_node()->get_logger(), "Failed to update LQR gain table: %s",
-            error.c_str());
-        return result;
-    }
-
-    if (use_k_tab_changed) {
-        if (lqr_controller_ == nullptr) {
+        LQRCalc::Matrix calculated_gain;
+        if (!lqr_calc_.calculate(q_vector, r_vector, calculated_gain, error) ||
+            calculated_gain.rows() != 2 || calculated_gain.cols() != 6) {
+            if (error.empty()) {
+                error = "6-state LQR calculator returned a gain with invalid dimensions";
+            }
             result.successful = false;
-            result.reason = "LQR controller is not initialized";
+            result.reason = error;
+            RCLCPP_ERROR(
+                get_node()->get_logger(),
+                "Failed to update LQR gain: %s",
+                error.c_str());
             return result;
         }
-        lqr_controller_->use_k_tab(use_k_tab);
+        calculated_online_gain = calculated_gain;
+    }
+
+    std::vector<std::pair<double, LqrGainMatrix>> gain_table;
+    if (gain_table_changed || use_k_tab_changed) {
+        if (use_k_tab || !gain_lengths.empty() || !gain_values.empty()) {
+            if (!build_gain_table(
+                    gain_lengths, gain_values, gain_table, error)) {
+                result.successful = false;
+                result.reason = error;
+                RCLCPP_ERROR(
+                    get_node()->get_logger(),
+                    "Failed to update LQR gain table: %s",
+                    error.c_str());
+                return result;
+            }
+        }
+        if (use_k_tab && gain_table.empty()) {
+            result.successful = false;
+            result.reason =
+                "K.lengths and K.values are required when use_k_tab is true";
+            return result;
+        }
     }
 
     if (lqr_weights_changed || gain_table_changed || use_k_tab_changed) {
+        std::lock_guard<std::mutex> lock(gain_mutex_);
+        if (lqr_weights_changed) {
+            online_gain_ = calculated_online_gain;
+        }
         q_diag_ = q_diag;
         r_diag_ = r_diag;
-        gain_lengths_ = gain_lengths;
-        gain_values_ = gain_values;
+        if (gain_table_changed || use_k_tab_changed) {
+            gain_lengths_ = gain_lengths;
+            gain_values_ = gain_values;
+            gain_table_ = std::move(gain_table);
+        }
         use_k_tab_ = use_k_tab;
         RCLCPP_INFO(
             get_node()->get_logger(),

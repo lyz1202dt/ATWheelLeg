@@ -12,11 +12,14 @@
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/node_interfaces/node_parameters_interface.hpp>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <controllerbase.hpp>
 #include "../../../../../Core/inc/controller/controller_6x.hpp"
+#include "tools/lqr_calc.hpp"
 
 #include "controller/vir_imu.hpp"
 #include "controller/vir_motor.hpp"
@@ -50,6 +53,12 @@ private:
 
     bool bind_motor_interfaces();
     bool configure_controller(std::string& error);
+    bool configure_lqr_gain(std::string& error);
+    bool get_lqr_gain(double leg_length, LqrGainMatrix& gain) const;
+    bool build_gain_table(const std::vector<double>& lengths,
+                          const std::vector<double>& values,
+                          std::vector<std::pair<double, LqrGainMatrix>>& table,
+                          std::string& error) const;
     bool read_motor_states();
     void cmd_vel_callback(const geometry_msgs::msg::Twist& msg);
     rcl_interfaces::msg::SetParametersResult on_set_parameters(
@@ -62,8 +71,10 @@ private:
     VirMotor rb_motor_;
     VirMotor lw_motor_;
     VirMotor rw_motor_;
-    std::unique_ptr<::Controller> lqr_controller_;
+    LQRCalc lqr_calc_;
     ControllerBase* controller_ = nullptr;
+    ::Controller* controller_impl_ = nullptr;
+    std::unique_ptr<::ControllerBase> lqr_controller_;
 
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_subscriber_;
 
@@ -87,8 +98,11 @@ private:
     bool use_k_tab_{true};
     std::vector<double> gain_lengths_;
     std::vector<double> gain_values_;
+    std::vector<std::pair<double, LqrGainMatrix>> gain_table_;
+    LqrGainMatrix online_gain_ = LqrGainMatrix::Zero();
     LqrStateWeight q_diag_ = {1.0, 1.0, 10.0, 1.0, 1.0, 1.0};
     LqrInputWeight r_diag_ = {1.0, 1.0};
+    mutable std::mutex gain_mutex_;
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
         parameter_callback_handle_;
 };

@@ -10,50 +10,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
-#include <vector>
 
-class LqrGainScheduler {
-public:
-    static constexpr std::size_t kStateSize = 6U;
-    static constexpr std::size_t kInputSize = 2U;
-
-    using GainMatrix = Eigen::Matrix<double, kInputSize, kStateSize>;
-    using StateVector = Eigen::Matrix<double, kStateSize, 1>;
-    using StateWeight = std::array<double, kStateSize>;
-    using InputWeight = std::array<double, kInputSize>;
-
-    LqrGainScheduler();
-
-    bool load_table(const std::vector<double>& lengths,
-                    const std::vector<double>& values,
-                    std::string& error);
-    bool update(double leg_length);
-    bool empty() const;
-
-    void use_k_tab(bool mode);
-    bool solve_lqr_gain(const StateWeight& q_diag,
-                        const InputWeight& r_diag,
-                        std::string& error);
-
-    const GainMatrix& ground_gain() const;
-    const GainMatrix& air_gain() const;
-
-private:
-    using TableEntry = std::pair<double, GainMatrix>;
-
-    bool use_k_tab_{true};
-    std::vector<TableEntry> table_;
-    GainMatrix ground_gain_ = GainMatrix::Zero();
-    GainMatrix air_gain_    = GainMatrix::Zero();
-};
-
-using LqrGainMatrix = LqrGainScheduler::GainMatrix;
-using LqrStateVector = LqrGainScheduler::StateVector;
-using LqrStateWeight = LqrGainScheduler::StateWeight;
-using LqrInputWeight = LqrGainScheduler::InputWeight;
-
+using LqrGainMatrix = Eigen::Matrix<double, 2, 6>;
+using LqrStateVector = Eigen::Matrix<double, 6, 1>;
+using LqrStateWeight = std::array<double, 6>;
+using LqrInputWeight = std::array<double, 2>;
 
 class Controller : public ControllerBase {
 public:
@@ -71,6 +35,7 @@ public:
                Motor* rb,
                Motor* lw,
                Motor* rw,
+               std::function<bool(double, LqrGainMatrix&)> gain_provider,
                DebugLogger debug_logger = nullptr);
 
     struct Params {
@@ -92,13 +57,6 @@ public:
     void input(float velocity, float omega, float height = 0.21f, int mode = 0) override;
 
     bool set_params(const Params& params);
-    bool set_gain_table(const std::vector<double>& lengths,
-                        const std::vector<double>& values,
-                        std::string& error);
-    bool update_lqr_gain(const LqrStateWeight& q_diag,
-                         const LqrInputWeight& r_diag,
-                         std::string& error);
-    void use_k_tab(bool mode);
 
     State state() const { return state_; }
     Eigen::Vector2d lqr_control() const;
@@ -121,8 +79,6 @@ private:
     static constexpr double kWheelRadius = 0.1;
     static constexpr double kWheelSpinIntegralLimit = 20.0;
     static constexpr double kBaselinkMass = 2.30;
-    static constexpr LqrStateWeight kDefaultLqrQDiag = {1.0, 1.0, 10.0, 1.0, 1.0, 1.0};
-    static constexpr LqrInputWeight kDefaultLqrRDiag = {1.0, 1.0};
 
     struct LegState {
         Eigen::Vector2d joint_position = Eigen::Vector2d::Zero();
@@ -159,7 +115,7 @@ private:
                               double dt);
 
     FiveBarLegCalc leg_;
-    LqrGainScheduler gain_scheduler_;
+    std::function<bool(double, LqrGainMatrix&)> gain_provider_;
     Params params_;
     State state_ = State::Recovery;
     int requested_mode_ = 0;
