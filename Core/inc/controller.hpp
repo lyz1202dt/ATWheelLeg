@@ -64,7 +64,14 @@ public:
         Airborne = 3,
     };
 
-    Controller(IMUBase* imu, Motor* lf, Motor* rf, Motor* lb, Motor* rb, Motor* lw, Motor* rw);
+    Controller(IMUBase* imu,
+               Motor* lf,
+               Motor* rf,
+               Motor* lb,
+               Motor* rb,
+               Motor* lw,
+               Motor* rw,
+               DebugLogger debug_logger = nullptr);
 
     struct Params {
         double body_width = 0.34;
@@ -81,7 +88,7 @@ public:
         double wheel_diff_ki = 0.002;
     };
 
-    bool update(float dt) override;
+    bool update(uint64_t ms) override;
     void input(float velocity, float omega, float height = 0.21f, int mode = 0) override;
 
     bool set_params(const Params& params);
@@ -174,6 +181,8 @@ private:
     bool dphi_filter_initialized_ = false;
     double filtered_lateral_acceleration_ = 0.0;
     bool lateral_acceleration_filter_initialized_ = false;
+    uint64_t last_update_ms_ = 0U;
+    bool update_time_initialized_ = false;
 
     Eigen::Vector2d lqr_control_ = Eigen::Vector2d::Zero();
 };

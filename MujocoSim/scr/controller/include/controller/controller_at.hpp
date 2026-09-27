@@ -1,6 +1,7 @@
 #pragma once
 
 #include <controller_interface/controller_interface.hpp>
+#include <Eigen/Dense>
 #include <geometry_msgs/msg/twist.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/node_interfaces/node_parameters_interface.hpp>
@@ -46,6 +47,7 @@ public:
 private:
     static constexpr size_t kMotorCount = 6U;
 
+    bool update_lqr_k(const Eigen::Vector<float, 10>& Q,const Eigen::Vector<float, 4>& R);
     bool bind_motor_interfaces();
     bool configure_lqr_gain(std::string& error);
     bool read_motor_states();
@@ -88,6 +90,7 @@ private:
     std::array<float, 10> q_diag_ = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
                                      1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
     std::array<float, 4> r_diag_ = {1.0F, 1.0F, 1.0F, 1.0F};
+    Eigen::Matrix<double, 4, 10> K_ = Eigen::Matrix<double, 4, 10>::Zero();
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
         parameter_callback_handle_;
 };

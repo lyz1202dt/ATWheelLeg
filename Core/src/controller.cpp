@@ -6,9 +6,17 @@
 #include <array>
 #include <cmath>
 #include <iterator>
+#include <utility>
 
-Controller::Controller(IMUBase* imu_in, Motor* lf_in, Motor* rf_in, Motor* lb_in, Motor* rb_in, Motor* lw_in, Motor* rw_in)
-    : ControllerBase(imu_in, lf_in, rf_in, lb_in, rb_in, lw_in, rw_in)
+Controller::Controller(IMUBase* imu_in,
+                       Motor* lf_in,
+                       Motor* rf_in,
+                       Motor* lb_in,
+                       Motor* rb_in,
+                       Motor* lw_in,
+                       Motor* rw_in,
+                       DebugLogger debug_logger)
+    : ControllerBase(imu_in, lf_in, rf_in, lb_in, rb_in, lw_in, rw_in, std::move(debug_logger))
     , leg_(kHipHalfDistance, kUpperLinkLength, kLowerLinkLength) {
     std::string error;
     (void)gain_scheduler_.solve_lqr_gain(kDefaultLqrQDiag, kDefaultLqrRDiag, error);
@@ -70,10 +78,13 @@ void Controller::input(float velocity, float omega, float height, int mode) {
 
 Eigen::Vector2d Controller::lqr_control() const { return lqr_control_; }
 
-bool Controller::update(float dt) {
-    if (!std::isfinite(dt) || dt <= 0.0F) {
-        dt = static_cast<float>(kDefaultDt);
+bool Controller::update(uint64_t ms) {
+    double dt = kDefaultDt;
+    if (update_time_initialized_ && ms > last_update_ms_) {
+        dt = static_cast<double>(ms - last_update_ms_) * 0.001;
     }
+    last_update_ms_ = ms;
+    update_time_initialized_ = true;
 
     if (imu == nullptr || !imu->is_ready() || lf == nullptr || rf == nullptr || lb == nullptr || rb == nullptr || lw == nullptr || rw == nullptr) {
         set_safe_commands();

@@ -1,7 +1,9 @@
 #include <controller/controller_at.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <complex>
 #include <limits>
 #include <memory>
 #include <rclcpp/logging.hpp>
@@ -89,9 +91,23 @@ LQRControllerAT::LQRControllerAT() {
     lb_motor_.offset  = -1.136586325; // angle2rad(-65.1216f);
     rb_motor_.offset  = -1.136586325; // angle2rad(-65.1216f);
 
-    auto controller = std::make_unique<::ControllerAT>(&imu_, &lf_motor_, &rf_motor_, &lb_motor_, &rb_motor_, &lw_motor_, &rw_motor_);
+    auto gain_scheduler = [this](const double& left_leg_length,
+                                 const double& right_leg_length,
+                                 Eigen::Matrix<double, 4, 10>& gain) {
+        (void)left_leg_length;
+        (void)right_leg_length;
+
+        if (!K_.allFinite()) {
+            return false;
+        }
+        gain = K_;
+        return gain.allFinite();
+    };
+
+    auto controller = std::make_unique<::ControllerAT>(
+        &imu_, &lf_motor_, &rf_motor_, &lb_motor_, &rb_motor_, &lw_motor_, &rw_motor_, gain_scheduler);
     controller_at_ = controller.get();
-    controller->register_debug_logger(
+    controller->set_debug_logger(
         [this](const char* message) { RCLCPP_INFO(get_node()->get_logger(), "%s", message == nullptr ? "" : message); });
     controller_ = std::move(controller);
 }
@@ -169,7 +185,7 @@ bool LQRControllerAT::configure_lqr_gain(std::string& error) {
         r[static_cast<Eigen::Index>(index)] = r_diag[index];
     }
 
-    if (controller_at_ == nullptr || !controller_at_->update_lqr_k(q, r)) {
+    if (controller_at_ == nullptr || !update_lqr_k(q, r)) {
         error = "ControllerAT rejected q_diag/r_diag";
         return false;
     }
@@ -177,7 +193,7 @@ bool LQRControllerAT::configure_lqr_gain(std::string& error) {
     RCLCPP_INFO(
         get_node()->get_logger(),
         "AT LQR K matrix configured:\n%s",
-        lqr_gain_to_string(controller_at_->K).c_str());
+        lqr_gain_to_string(K_).c_str());
 
     q_diag_ = q_diag;
     r_diag_ = r_diag;
@@ -208,7 +224,7 @@ controller_interface::CallbackReturn LQRControllerAT::on_deactivate(const rclcpp
 }
 
 controller_interface::return_type LQRControllerAT::update(const rclcpp::Time& time, const rclcpp::Duration& period) {
-    (void)time;
+    (void)period;
     if (!read_motor_states() || controller_ == nullptr) {
         RCLCPP_ERROR_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000, "Invalid AT motor state or controller");
         return controller_interface::return_type::ERROR;
@@ -216,7 +232,7 @@ controller_interface::return_type LQRControllerAT::update(const rclcpp::Time& ti
 
     controller_->input(
         expected_velocity_.load(std::memory_order_relaxed), expected_omega_.load(std::memory_order_relaxed), 0.2F, requested_mode_);
-    controller_->update(static_cast<float>(period.seconds()));
+    controller_->update(static_cast<uint64_t>(time.nanoseconds() / 1000000LL));
     return controller_interface::return_type::OK;
 }
 
@@ -329,7 +345,7 @@ rcl_interfaces::msg::SetParametersResult LQRControllerAT::on_set_parameters(
             r[static_cast<Eigen::Index>(index)] = r_diag[index];
         }
 
-        if (controller_at_ == nullptr || !controller_at_->update_lqr_k(q, r)) {
+        if (controller_at_ == nullptr || !update_lqr_k(q, r)) {
             result.successful = false;
             result.reason = "ControllerAT rejected q_diag/r_diag";
             RCLCPP_ERROR(get_node()->get_logger(), "%s", result.reason.c_str());
@@ -337,15 +353,142 @@ rcl_interfaces::msg::SetParametersResult LQRControllerAT::on_set_parameters(
         }
         q_diag_ = q_diag;
         r_diag_ = r_diag;
-        RCLCPP_INFO(
+            RCLCPP_INFO(
             get_node()->get_logger(),
             "AT LQR K matrix updated from q_diag/r_diag:\n%s",
-            lqr_gain_to_string(controller_at_->K).c_str());
+            lqr_gain_to_string(K_).c_str());
     }
 
     return result;
 }
 
+
+bool LQRControllerAT::update_lqr_k(const Eigen::Vector<float, 10>& Q,
+                                const Eigen::Vector<float, 4>& R) {
+    using Matrix10d  = Eigen::Matrix<double, 10, 10>;
+    using Matrix4d   = Eigen::Matrix<double, 4, 4>;
+    using Matrix20d  = Eigen::Matrix<double, 20, 20>;
+    using Matrix10cd = Eigen::Matrix<std::complex<double>, 10, 10>;
+
+    Matrix10d A;
+    A <<
+        0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000, -13.55160363, 0.00000000, -13.55160363, 0.00000000, 0.00000000, 0.00000000,
+        0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000, -2.14332607, 0.00000000, 2.14332607, 0.00000000, 0.00000000, 0.00000000,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000, 213.48521397, 0.00000000, -49.86561124, 0.00000000, 0.00000000, 0.00000000,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000, -49.86561124, 0.00000000, 213.48521397, 0.00000000, 0.00000000, 0.00000000,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000, 20.24352472, 0.00000000, 20.24352472, 0.00000000, -28.77747990, 0.00000000;
+
+    Eigen::Matrix<double, 10, 4> B;
+    B <<
+        0.00000000, 0.00000000, 0.00000000, 0.00000000,
+        5.75310641, 5.75310641, -0.93168984, -0.93168984,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000,
+        -3.99485616, 3.99485616, -0.14735637, 0.14735637,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000,
+        -71.63664239, 17.64525726, 14.67737768, -3.42832366,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000,
+        17.64525726, -71.63664239, -3.42832366, 14.67737768,
+        0.00000000, 0.00000000, 0.00000000, 0.00000000,
+        -2.92121265, -2.92121265, -5.28991389, -5.28991389;
+
+    Matrix10d state_cost = Matrix10d::Zero();
+    for (Eigen::Index index = 0; index < 10; ++index) {
+        const double weight = static_cast<double>(Q[index]);
+        if (!std::isfinite(weight) || weight < 0.0) {
+            return false;
+        }
+        state_cost(index, index) = weight;
+    }
+
+    Matrix4d input_cost_inverse = Matrix4d::Zero();
+    for (Eigen::Index index = 0; index < 4; ++index) {
+        const double weight = static_cast<double>(R[index]);
+        if (!std::isfinite(weight) || weight <= 0.0) {
+            return false;
+        }
+        input_cost_inverse(index, index) = 1.0 / weight;
+    }
+
+    Matrix20d hamiltonian = Matrix20d::Zero();
+    hamiltonian.template block<10, 10>(0, 0) = A;
+    hamiltonian.template block<10, 10>(0, 10) =
+        -B * input_cost_inverse * B.transpose();
+    hamiltonian.template block<10, 10>(10, 0) = -state_cost;
+    hamiltonian.template block<10, 10>(10, 10) = -A.transpose();
+
+    Eigen::ComplexEigenSolver<Matrix20d> eigen_solver(hamiltonian);
+    if (eigen_solver.info() != Eigen::Success) {
+        return false;
+    }
+
+    const auto eigenvalues = eigen_solver.eigenvalues();
+    const auto eigenvectors = eigen_solver.eigenvectors();
+    std::array<int, 10> stable_indices{};
+    Eigen::Index stable_count = 0;
+    for (Eigen::Index index = 0; index < eigenvalues.size(); ++index) {
+        if (eigenvalues[index].real() < -1.0e-8) {
+            if (stable_count >= static_cast<Eigen::Index>(stable_indices.size())) {
+                return false;
+            }
+            stable_indices[static_cast<std::size_t>(stable_count++)] =
+                static_cast<int>(index);
+        }
+    }
+
+    if (stable_count != 10) {
+        return false;
+    }
+
+    Matrix10cd u1;
+    Matrix10cd u2;
+    for (Eigen::Index column = 0; column < 10; ++column) {
+        u1.col(column) =
+            eigenvectors.template block<10, 1>(0, stable_indices[column]);
+        u2.col(column) =
+            eigenvectors.template block<10, 1>(10, stable_indices[column]);
+    }
+
+    const auto u1_decomposition = u1.fullPivLu();
+    if (!u1_decomposition.isInvertible()) {
+        return false;
+    }
+
+    const Matrix10cd p_complex = u2 * u1.inverse();
+    const double max_imaginary = p_complex.imag().cwiseAbs().maxCoeff();
+    if (!std::isfinite(max_imaginary) || max_imaginary > 1.0e-5) {
+        return false;
+    }
+
+    Matrix10d p = p_complex.real();
+    p = 0.5 * (p + p.transpose());
+
+    const Eigen::Matrix<double, 4, 10> gain =
+        input_cost_inverse * B.transpose() * p;
+    if (!gain.allFinite()) {
+        return false;
+    }
+
+    const Matrix10d residual =
+        A.transpose() * p + p * A -
+        p * B * input_cost_inverse * B.transpose() * p + state_cost;
+    const double residual_norm = residual.norm();
+    const double residual_scale =
+        1.0 + state_cost.norm() + A.norm() * p.norm() +
+        (p * B * input_cost_inverse * B.transpose() * p).norm();
+    if (!std::isfinite(residual_norm) ||
+        !std::isfinite(residual_scale) ||
+        residual_norm > 1.0e-6 * residual_scale) {
+        return false;
+    }
+
+    K_ = gain;
+    return true;
+}
 
 } // namespace lqr_controller
 

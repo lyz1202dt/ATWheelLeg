@@ -99,7 +99,9 @@ void ControlTask(void* param) {
     (void)param;
     TickType_t last_wake_time = xTaskGetTickCount();
     for (;;) {
-        (void)controller->update(0.002f);
+        const uint64_t now_ms =
+            static_cast<uint64_t>(xTaskGetTickCount()) * static_cast<uint64_t>(portTICK_PERIOD_MS);
+        (void)controller->update(now_ms);
         vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(2));
     }
 }

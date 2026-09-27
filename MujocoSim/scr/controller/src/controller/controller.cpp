@@ -246,7 +246,7 @@ controller_interface::return_type LQRController::update(
     const rclcpp::Time& time,
     const rclcpp::Duration& period)
 {
-    (void)time;
+    (void)period;
     if (!read_motor_states()) {
         RCLCPP_ERROR_THROTTLE(
             get_node()->get_logger(),
@@ -265,7 +265,7 @@ controller_interface::return_type LQRController::update(
         expected_omega_.load(std::memory_order_relaxed),
         static_cast<float>(controller_params_.leg_exp_length),
         requested_mode_);
-    (void)controller_->update(static_cast<float>(period.seconds()));
+    (void)controller_->update(static_cast<uint64_t>(time.nanoseconds() / 1000000LL));
     return controller_interface::return_type::OK;
 }
 
