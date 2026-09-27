@@ -846,6 +846,6 @@
     <child
       link="right_wheel_link" />
     <axis
-      xyz="0 -1 0" />
+      xyz="0 1 0" />
   </joint>
 </robot>

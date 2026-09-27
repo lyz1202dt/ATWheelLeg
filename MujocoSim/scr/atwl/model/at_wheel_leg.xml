@@ -154,7 +154,7 @@
                             quat="0.67653 0.196405 0.194486 0.682574" mass="0.47"
                             diaginertia="0.000399918 0.000299403 0.000297389" />
                         <joint name="right_rear2_link_right_wheel_link_joint" pos="0 0 0"
-                            axis="0 -1 0" />
+                            axis="0 1 0" />
                         <geom type="mesh" rgba="0.752941 0.752941 0.752941 1"
                             mesh="right_wheel_link" contype="0" conaffinity="0" />
                         <geom type="cylinder" pos="0 -0.013 0"

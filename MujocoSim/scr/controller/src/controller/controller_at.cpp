@@ -337,7 +337,10 @@ rcl_interfaces::msg::SetParametersResult LQRControllerAT::on_set_parameters(
         }
         q_diag_ = q_diag;
         r_diag_ = r_diag;
-        RCLCPP_INFO(get_node()->get_logger(), "AT LQR gain updated from q_diag/r_diag");
+        RCLCPP_INFO(
+            get_node()->get_logger(),
+            "AT LQR K matrix updated from q_diag/r_diag:\n%s",
+            lqr_gain_to_string(controller_at_->K).c_str());
     }
 
     return result;
