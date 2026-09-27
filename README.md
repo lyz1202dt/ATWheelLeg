@@ -19,13 +19,15 @@ AT Wheel-Leg 是一个面向轮腿平衡车的控制软件工程，当前包含�
 
 主要功能包括：
 
-- 三种腿部构型的正运动学、逆运动学与雅可比矩阵：
-  - `LegCalc`：五连杆并联结构；
-  - `LegCalc2`：偏置并联结构；
-  - `LegCalc3`：真串联结构；
+- 四种腿部构型的正运动学、逆运动学与雅可比矩阵，统一继承自 `LegCalcBase`：
+  - `FiveBarLegCalc`：五连杆并联结构；
+  - `OffsetParallelCalc`：偏置并联结构；
+  - `OffsetParallelCalc2`：带重力补偿的偏置并联结构；
+  - `SeriesJointCalc`：真串联结构；
 - 基于自动微分计算雅可比矩阵，并完成腿端速度/力与关节速度/力矩之间的正逆映射；
 - 通用 `PID` 控制器（普通、微分先行等）；
-- 随腿长线性插值的 LQR 增益调度，支持增益表 `k_tab` 与在线求解两种模式；
+- 独立的 `LQRCalc` 类，根据系统矩阵 `A`/`B` 与权重对角 `Q`/`R` 在线求解 LQR 增益；
+- `Controller` 通过 `gain_provider` 回调获取增益，支持增益表 `k_tab` 线性插值与在线求解两种来源；
 - VMC 腿长控制、左右腿角度同步与轮速差控制；
 - 离地、恢复、平衡和 VMC 测试状态机；
 - 传感器或运动学数据异常时的安全停机指令。
@@ -53,11 +55,10 @@ AT Wheel-Leg 是一个面向轮腿平衡车的控制软件工程，当前包含�
 | `KINAMIC_TEST` | 运动学测试 |
 | `VMC_TEST` | 测试 VMC 功能 |
 | `READY_STAND1` | 斜坡渐变当前期望到准备站立的姿态 |
-| `READY_STAND2` | 完成小板凳形态 |
-| `TOUCH_GROUND` | 接触地面，LQR 平衡控制 |
-| `LEFT_FLY` | 左侧悬空，LQR 左侧失控 |
-| `RIGHT_FLAY` | 右侧悬空，LQR 右侧失控 |
-| `ALL_FLY` | 全部悬空，LQR 仅姿态稳定 |
+| `READY_STAND2` | 完成小板凳形态（已在枚举中声明，当前未实现分支） |
+| `LQR_CTRL` | 接触地面，LQR 平衡控制 |
+
+通过 `input(..., mode)` 切换期望状态：`1`→`IDEL`、`2`→`KINAMIC_TEST`、`3`→`VMC_TEST`、`4`→`LQR_CTRL`。当前 `READY_STAND1` 完成斜坡后直接进入 `LQR_CTRL`。
 
 ### MCU 固件
 
@@ -69,7 +70,8 @@ AT Wheel-Leg 是一个面向轮腿平衡车的控制软件工程，当前包含�
 - UART、ADC、定时器、PWM 和 GPIO 封装；
 - USB CDC 设备；
 - MCU 端的 IMU、电机、控制、LQR 在线调试和测试任务；
-- 预置的 17 个腿长采样点、每个采样点 12 个 LQR 增益值。
+- 使用 `LQRCalc` 在线求解增益，并通过 `provide_lqr_gain` 回调提供给控制器；
+- 预置的 17 个腿长采样点、每个采样点 12 个 LQR 增益值（`k_tab`）。
 
 硬件初始化入口为 `bsp::hardware::init()`，应用入口为 `app_main()`。主循环由 FreeRTOS 调度，应用会创建以下任务：
 
@@ -97,15 +99,15 @@ AT Wheel-Leg 是一个面向轮腿平衡车的控制软件工程，当前包含�
 - `lqr_controller/LQRControllerAT`：读取 IMU、关节状态和 `/cmd_vel`，调用 `Core::ControllerAT`（10 状态全身 LQR）控制 AT 轮腿机器人；
 - `lqr_controller/MujocoSimController`：链式中间控制器，将上层控制器输出转换为 MuJoCo 侧的位置/速度/力矩/`kp`/`kd` 目标接口。
 
-默认仿真控制频率为 500 Hz。`sim_controller.yaml` 中 LQR 增益表覆盖腿长 `0.18 m` 到 `0.34 m`，步长 `0.01 m`。
+默认仿真控制频率为 500 Hz。`LQRController` 支持增益表插值（`use_k_tab: true`，增益表覆盖腿长 `0.18 m` 到 `0.34 m`，步长 `0.01 m`）与在线求解（`q_diag` / `r_diag`）两种方式；`LQRControllerAT` 通过 `q_diag` / `r_diag` 在线求解 10 状态增益。
 
 ## 目录结构
 
 ```text
 .
 ├── Core/                         # 跨平台控制核心
-│   ├── inc/                      # 控制器、运动学、IMU/电机抽象、PID 和 LQR 接口
-│   ├── src/                      # 控制器、腿部计算、PID、增益调度与测试实现
+│   ├── inc/                      # 控制器、运动学、LQR、IMU/电机抽象、PID 等接口
+│   ├── src/                      # 控制器、腿部计算、LQR、PID 与测试实现
 │   ├── cmake/                    # Core CMake 包导出配置
 │   └── CMakeLists.txt
 ├── MCU/                          # STM32H723 固件
@@ -171,10 +173,10 @@ ctest --test-dir Core/build --output-on-failure
 
 测试程序 `core_test` 会验证：
 
-- `LegCalc2`（偏置并联）逆运动学与正运动学的往返误差；
-- `LegCalc`（五连杆并联）与 `LegCalc3`（真串联）的正逆运动学往返及零角度约定；
+- `OffsetParallelCalc`（偏置并联）逆运动学与正运动学的往返误差；
+- `FiveBarLegCalc`（五连杆并联）与 `SeriesJointCalc`（真串联）的正逆运动学往返及零角度约定；
 - 速度映射与雅可比矩阵的有限差分一致性；
-- LQR 增益的在线求解。
+- `LQRCalc` 在线求解 LQR 增益。
 
 ### 构建 STM32 固件
 
@@ -261,26 +263,32 @@ ros2 launch controller atwl_controller.launch.py \
 所有控制器继承自 `ControllerBase`，最小使用方式如下：
 
 ```cpp
-Controller controller(imu, lf, rf, lb, rb, lw, rw);
+// 增益提供者：可以是增益表插值，也可以是 LQRCalc 在线求解
+std::function<bool(double, LqrGainMatrix&)> gain_provider =
+    [](double leg_length, LqrGainMatrix& gain) {
+        (void)leg_length;
+        // 按腿长从增益表插值或在线求解后填入 gain
+        gain.setZero();
+        return gain.allFinite();
+    };
+
+Controller controller(imu, lf, rf, lb, rb, lw, rw, gain_provider);
 
 Controller::Params params;
 controller.set_params(params);
 
-std::string error;
-controller.set_gain_table(gain_lengths, gain_values, error);
-
 controller.input(expected_velocity, expected_omega, expected_leg_length, mode);
-controller.update(dt);
+controller.update(now_ms);  // now_ms 为当前毫秒时间戳
 ```
 
 AT 轮腿机器人使用 `ControllerAT`，通过 `ControllerBase*` 指针即可在仿真包装层中替换具体实现：
 
 ```cpp
-ControllerAT controller_at(imu, lf, rf, lb, rb, lw, rw);
+ControllerAT controller_at(imu, lf, rf, lb, rb, lw, rw, gain_scheduler);
 ControllerBase* controller = &controller_at;
 
 controller->input(velocity, omega, height, mode);
-controller->update(dt);
+controller->update(now_ms);
 ```
 
 传感器和执行器需要分别实现：
@@ -290,7 +298,7 @@ controller->update(dt);
 
 ## 安全与参数说明
 
-- 控制器会检查时间步长、IMU 状态、姿态四元数、运动学结果和增益表数据；
+- 控制器会检查时间步长、IMU 状态、姿态四元数、运动学结果和增益提供者返回的增益数据；
 - 输入或状态无效时，会向六个电机发送零指令；
 - 髋关节输出力矩在公共控制器中限制为 `±12 N·m`；
 - 轮电机输出力矩在公共控制器中限制为 `±2 N·m`；
