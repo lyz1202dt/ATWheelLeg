@@ -289,8 +289,11 @@ bool ControllerAT::update(uint64_t ms) {
                   x[0], x[1], x[2], x[3], x[4],
                   x[5], x[6], x[7], x[8], x[9]);
         
-        // xd[0]=s;
-        // xd[2]=phi;
+        //填写参考输入
+        ref_pos+=ref_vel*0.002f;
+        ref_phi+=ref_omega*0.002f;
+        xd[0]=ref_pos;
+        xd[2]=ref_phi;
 
         //u = sp.Matrix([Twl, Twr, Tbl, Tbr])
         Eigen::Vector4d u=Eigen::Vector4d::Zero();  //计算LQR控制律
@@ -319,12 +322,22 @@ bool ControllerAT::update(uint64_t ms) {
             u=K_air*(xd-x);
         }
 
+        constexpr double body_width = 0.34;
+        const double leg_height_roll =
+            std::atan2(right_leg_pos[0] - left_leg_pos[0], body_width);
+        const double roll_error = wrap_to_pi(-roll - leg_height_roll);
+        const double leg_length_difference = body_width * std::tan(roll_error);
+        const float left_ref_height = static_cast<float>(
+            std::clamp(static_cast<double>(ref_height) + 0.5 * leg_length_difference, 0.25, 0.4));
+        const float right_ref_height = static_cast<float>(
+            std::clamp(static_cast<double>(ref_height) - 0.5 * leg_length_difference, 0.25, 0.4));
+
         //腿长PD控制器
         Eigen::Vector2d left_leg_exp_force,right_leg_exp_force,left_joint_torque,right_joint_torque;
         left_leg_exp_force[1]=u[2];
         right_leg_exp_force[1]=u[3];
-        left_leg_exp_force[0]=left_leg_length.update(left_leg_pos[0],left_leg_vel[0],ref_height);
-        right_leg_exp_force[0]=right_leg_length.update(right_leg_pos[0],right_leg_vel[0],ref_height);
+        left_leg_exp_force[0]=left_leg_length.update(left_leg_pos[0],left_leg_vel[0],left_ref_height);
+        right_leg_exp_force[0]=right_leg_length.update(right_leg_pos[0],right_leg_vel[0],right_ref_height);
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 
@@ -346,8 +359,8 @@ bool ControllerAT::update(uint64_t ms) {
 
 
 void ControllerAT::input(float velocity, float omega, float height, int mode) {
-    (void)velocity;
-    (void)omega;
+    ref_vel=velocity;
+    ref_omega=omega;
     ref_height=height;
 
     if (mode == 1) {

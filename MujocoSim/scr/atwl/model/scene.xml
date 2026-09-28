@@ -25,21 +25,29 @@
     </asset>
 
     <worldbody>
-        <body name="steps_and_platform">
+        <body name="terrain_adaptation_course">
             <geom name="ground" type="plane" size="50 50 0.3" pos="0 0 0" material="groundplane"
                 contype="1" conaffinity="1" />
 
             <light name="light" pos="0 0 5" dir="0 0 -1" directional="true" />
 
-            <geom name="step1" type="box" size="0.15 5 0.05" pos="5.15 0 0.05" rgba="0.4 0.4 0.4 1" />
+            <geom name="speed_bump_1" type="box" size="0.06 1 0.0075" pos="2.0 0 0.0075" rgba="0.72 0.55 0.14 1" />
+            <geom name="speed_bump_2" type="box" size="0.06 1 0.0075" pos="2.35 0 0.0075" rgba="0.72 0.55 0.14 1" />
+            <geom name="speed_bump_3" type="box" size="0.06 1 0.0075" pos="2.7 0 0.0075" rgba="0.72 0.55 0.14 1" />
+            <geom name="speed_bump_4" type="box" size="0.06 1 0.0075" pos="3.05 0 0.0075" rgba="0.72 0.55 0.14 1" />
+            <geom name="speed_bump_5" type="box" size="0.06 1 0.0075" pos="3.4 0 0.0075" rgba="0.72 0.55 0.14 1" />
 
-            <geom name="step2" type="box" size="0.15 5 0.1" pos="5.45 0 0.1" rgba="0.5 0.5 0.5 1" />
+            <!-- 10 deg ramp: 1.5 m slope length, 2 m width, 1 m top platform. -->
+            <body name="ramp_10deg" pos="5 -1.25 0" quat="0.996195 0 -0.087156 0">
+                <geom name="ramp_10deg_slope" type="box" size="0.75 1 0.04" pos="0.75 0 -0.04" rgba="0.44 0.48 0.52 1" />
+            </body>
+            <geom name="ramp_10deg_platform" type="box" size="0.5 1 0.04" pos="6.977 -1.25 0.220" rgba="0.50 0.54 0.58 1" />
 
-            <geom name="step3" type="box" size="0.15 5 0.15" pos="5.75 0 0.15" rgba="0.6 0.6 0.6 1" />
-
-            <geom name="step4" type="box" size="0.15 5 0.2" pos="6.05 0 0.2" rgba="0.7 0.7 0.7 1" />
-
-            <geom name="platform" type="box" size="0.5 5 0.2" pos="6.7 0 0.2" rgba="0.8 0.8 0.8 1" />
+            <!-- 5 deg ramp: 1.5 m slope length, 2 m width, 1 m top platform. -->
+            <body name="ramp_5deg" pos="5 1.25 0" quat="0.999048 0 -0.043619 0">
+                <geom name="ramp_5deg_slope" type="box" size="0.75 1 0.04" pos="0.75 0 -0.04" rgba="0.36 0.40 0.44 1" />
+            </body>
+            <geom name="ramp_5deg_platform" type="box" size="0.5 1 0.04" pos="6.994 1.25 0.091" rgba="0.42 0.46 0.50 1" />
         </body>
     </worldbody>
 

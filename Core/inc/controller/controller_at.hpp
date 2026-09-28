@@ -63,7 +63,6 @@ private:
     bool reset_traj_generated{false};
     uint64_t time_point{0U};
 
-    float ref_height{0.25f};
     LowPassFilter ds_filter_;
     LowPassFilter dphi_filter_;
     LowPassFilter dthll_filter_;
@@ -74,7 +73,7 @@ private:
     PID left_leg_length;
     PID right_leg_length;
     RobotState state{KINAMIC_TEST};
-    double ref_pos{0.0},ref_vel{0.0},ref_omega{0.0};
+    double ref_pos{0.0},ref_vel{0.0},ref_phi{0.0f},ref_omega{0.0},ref_height{0.25f};
 
     bool yaw_tracking_initialized_{false};
     double yaw_previous_{0.0};

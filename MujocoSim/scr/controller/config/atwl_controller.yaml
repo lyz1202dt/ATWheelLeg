@@ -25,7 +25,7 @@ at_controller:
     use_sim_time: true
     imu_topic: /imu_imu_sensor/imu
     imu_pose_topic: /imu_pose_sensor/pose
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /turtle1/cmd_vel
     effort_limit: 20.0
     mode: 0
     expected_velocity: 0.0
