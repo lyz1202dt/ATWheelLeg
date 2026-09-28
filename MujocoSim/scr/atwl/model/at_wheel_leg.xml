@@ -42,18 +42,18 @@
                         range="-3.14 3.14" />
                     <geom type="mesh" rgba="1 1 1 1" mesh="left_front2_link" />
                     <body name="left_front3_link" pos="-0.085135 0.01075 -0.073541">
-                        <inertial pos="-0.0544293 -0.0219847 0.0632885"
-                            quat="0.355581 0.818471 0.127516 0.432906" mass="0.0493498"
-                            diaginertia="0.000231243 0.000161055 7.79684e-05" />
+                        <inertial pos="-0.070230416 0 0.060949969"
+                            quat="0.64923891 -0.28015859 -0.28015859 0.64923891" mass="0.0372564367946"
+                            diaginertia="0.00012181 0.00011736177 5.0682323e-06" />
                         <joint name="left_front2_link_left_front3_link_joint" pos="0 0 0"
                             axis="0 -1 0" range="-3.14 3.14" />
                         <geom type="mesh" rgba="1 1 1 1" mesh="left_front3_link" />
                         <site name="left_site1_link" pos="-0.087675 0.00575 0.070493" size="0.008"
                             rgba="1 0.2 0.2 1" />
                         <body name="left_front4_link" pos="-0.12606 0.01075 0.12295">
-                            <inertial pos="-0.0329412 -0.0354526 -0.0325285"
-                                quat="0.131424 0.536757 -0.528155 0.644727" mass="0.0356841"
-                                diaginertia="0.000161825 0.000131217 3.27379e-05" />
+                            <inertial pos="-0.052391036 0.0011318944 -0.024294891"
+                                quat="0.59596015 -0.38056733 0.38056733 -0.59596015" mass="0.023590747855"
+                                diaginertia="3.774e-05 3.7061236e-05 1.0587639e-06" />
                             <joint name="left_front3_link_left_front4_link_joint" pos="0 0 0"
                                 axis="0 -1 0" range="-3.14 3.14" />
                             <geom type="mesh" rgba="1 1 1 1" mesh="left_front4_link" />
@@ -65,18 +65,18 @@
             </body>
             <body name="left_rear1_link" pos="0 0.1695 -0.053"
                 quat="0.215403 2.79576e-06 0.976525 2.79576e-06">
-                <inertial pos="0.0730961 0.00352034 -0.00262475"
-                    quat="0.501574 0.516922 0.489536 0.491497" mass="0.326077"
-                    diaginertia="0.00241711 0.00239764 0.000241495" />
+                <inertial pos="0.076749202 9.471938e-05 -0.0027258467"
+                    quat="0.50354123 -0.50208827 0.50436877 -0.48986298" mass="0.313983977716"
+                    diaginertia="0.0023006144 0.002184833 0.00014448259" />
                 <joint name="base_link_left_rear1_link_joint" pos="0 0 0" axis="0 1 0"
                     range="-3.14 3.14" actuatorfrcrange="-40 40" />
                 <geom type="mesh" rgba="1 1 1 1" mesh="left_rear1_link" />
                 <site name="left_site11_link" pos="0.0945 0.02175 0" size="0.008" rgba="1 0.2 0.2 1" />
                 <body name="left_rear2_link" pos="0.21 0.0165 0"
                     quat="0.215403 2.79576e-06 -0.976525 -2.79576e-06">
-                    <inertial pos="0.0906005 -0.00181283 -0.0693819"
-                        quat="0.245383 0.703744 0.579798 0.32919" mass="0.231612"
-                        diaginertia="0.00236157 0.00229573 0.000100011" />
+                    <inertial pos="0.095880953 0.00031448464 -0.076093802"
+                        quat="-0.30025086 0.6414495 -0.63986833 0.29826244" mass="0.219518661772"
+                        diaginertia="0.0020484542 0.0019837784 7.2297429e-05" />
                     <joint name="left_rear1_link_left_rear2_link_joint" pos="0 0 0" axis="0 1 0"
                         range="-3.14 3.14" />
                     <geom type="mesh" rgba="1 1 1 1" mesh="left_rear2_link" />
@@ -109,18 +109,18 @@
                         range="-3.14 3.14" />
                     <geom type="mesh" rgba="1 1 1 1" mesh="right_front2_link" />
                     <body name="right_front3_link" pos="-0.085135 -0.01075 -0.073541">
-                        <inertial pos="-0.0516112 -0.0209854 0.0632885"
-                            quat="0.372777 0.800847 0.164022 0.439065" mass="0.0493498"
-                            diaginertia="0.000239839 0.000173521 7.33447e-05" />
+                        <inertial pos="-0.07023045 0 0.060949928"
+                            quat="0.64923891 -0.28015859 -0.28015859 0.64923891" mass="0.0372564367946"
+                            diaginertia="0.00012181 0.00011736177 5.0682323e-06" />
                         <joint name="right_front2_link_right_front3_link_joint" pos="0 0 0"
                             axis="0 -1 0" range="-3.14 3.14" />
                         <geom type="mesh" rgba="1 1 1 1" mesh="right_front3_link" />
                         <site name="right_site1_link" pos="-0.087675 -0.00575 0.070493" size="0.008"
                             rgba="1 0.2 0.2 1" />
                         <body name="right_front4_link" pos="-0.12606 -0.01075 0.12295">
-                            <inertial pos="-0.0363302 -0.0355672 -0.0325285"
-                                quat="0.146852 0.532052 -0.53848 0.636706" mass="0.0356841"
-                                diaginertia="0.000142814 0.000111016 3.39451e-05" />
+                            <inertial pos="-0.052391038 -0.0011318944 -0.024294895"
+                                quat="0.59596015 -0.38056733 0.38056733 -0.59596015" mass="0.023590747855"
+                                diaginertia="3.774e-05 3.7061236e-05 1.0587639e-06" />
                             <joint name="right_front3_link_right_front4_link_joint" pos="0 0 0"
                                 axis="0 -1 0" range="-3.14 3.14" />
                             <geom type="mesh" rgba="1 1 1 1" mesh="right_front4_link" />
@@ -132,18 +132,18 @@
             </body>
             <body name="right_rear1_link" pos="0 -0.1695 -0.053"
                 quat="0.215403 2.79576e-06 0.976525 2.79576e-06">
-                <inertial pos="0.0747094 0.00348916 -0.00262475"
-                    quat="0.578809 0.427183 0.569505 0.397693" mass="0.326077"
-                    diaginertia="0.00234128 0.00232789 0.000250338" />
+                <inertial pos="0.0767492 -9.4717031e-05 -0.0027258468"
+                    quat="0.50354123 0.50208827 0.50436877 0.48986298" mass="0.313983977716"
+                    diaginertia="0.0023006144 0.002184833 0.00014448259" />
                 <joint name="base_link_right_rear1_link_joint" pos="0 0 0" axis="0 1 0"
                     range="-3.14 3.14" actuatorfrcrange="-40 40" />
                 <geom type="mesh" rgba="1 1 1 1" mesh="right_rear1_link" />
                 <site name="right_site11_link" pos="0.0945 -0.02175 0" size="0.008"
                     rgba="1 0.2 0.2 1" />
                 <body name="right_rear2_link" pos="0.21 -0.0165 0" quat="0.215402 0 -0.976525 0">
-                    <inertial pos="0.091639 -0.00202747 -0.0698147"
-                        quat="0.248188 0.704462 0.580436 0.32439" mass="0.233709"
-                        diaginertia="0.00234714 0.00227262 0.000102918" />
+                    <inertial pos="0.096353118 -0.00015452341 -0.076486714"
+                        quat="0.29981761 0.64096634 0.64036001 0.29868147" mass="0.221615349787"
+                        diaginertia="0.0020559266 0.0019908736 7.2699874e-05" />
                     <joint name="right_rear1_link_right_rear2_link_joint" pos="0 0 0" axis="0 -1 0"
                         range="-3.14 3.14" />
                     <geom type="mesh" rgba="1 1 1 1" mesh="right_rear2_link" />
