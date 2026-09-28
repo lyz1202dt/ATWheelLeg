@@ -278,12 +278,14 @@ bool ControllerAT::update(uint64_t ms) {
         Eigen::Vector4d u=Eigen::Vector4d::Zero();  //计算LQR控制律
         
         //接触状态判断
-        debug_log("left_force:%lf,right_force:%lf", left_leg_force[0],right_leg_force[0]);
-        u=K*(xd-x);
-        // if(left_leg_force[0]>30.0&&right_leg_force[0]>30.0) //两轮接地
-        // {
-            
-        // }
+        //debug_log("left_force:%lf,right_force:%lf", left_leg_force[0],right_leg_force[0]);
+        debug_log("left_length:%lf,right_length:%lf", left_leg_pos[0],right_leg_pos[0]);
+        
+        
+        if(left_leg_force[0]>25.0&&right_leg_force[0]>25.0) //两轮接地
+        {
+            u=K*(xd-x);
+        }
         // else if(left_leg_force[0]>30.0&&right_leg_force[0]<30.0) //左轮接地
         // {
         //     u=K_air*(xd-x);
@@ -292,17 +294,17 @@ bool ControllerAT::update(uint64_t ms) {
         // {
         //     u=K_air*(xd-x);
         // }
-        // else //左右轮都没有接地
-        // {
-        //     u=K_air*(xd-x);
-        // }
+        else //左右轮都没有接地
+        {
+            u=K_air*(xd-x);
+        }
 
         //腿长PD控制器
         Eigen::Vector2d left_leg_exp_force,right_leg_exp_force,left_joint_torque,right_joint_torque;
         left_leg_exp_force[1]=u[2];
         right_leg_exp_force[1]=u[3];
-        left_leg_exp_force[0]=left_leg_length.update(left_leg_pos[0],left_leg_vel[0],0.25f);
-        right_leg_exp_force[0]=right_leg_length.update(right_leg_pos[0],right_leg_vel[0],0.25f);
+        left_leg_exp_force[0]=left_leg_length.update(left_leg_pos[0],left_leg_vel[0],ref_height);
+        right_leg_exp_force[0]=right_leg_length.update(right_leg_pos[0],right_leg_vel[0],ref_height);
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 
@@ -326,7 +328,7 @@ bool ControllerAT::update(uint64_t ms) {
 void ControllerAT::input(float velocity, float omega, float height, int mode) {
     (void)velocity;
     (void)omega;
-    (void)height;
+    ref_height=height;
 
     if (mode == 1) {
         exp_state = IDEL;

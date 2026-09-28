@@ -63,6 +63,7 @@ private:
     bool reset_traj_generated{false};
     uint64_t time_point{0U};
 
+    float ref_height{0.25f};
     LowPassFilter ds_filter_;
     LowPassFilter dphi_filter_;
     LowPassFilter dthll_filter_;

@@ -48,6 +48,9 @@ public:
 
 private:
     static constexpr size_t kMotorCount = 6U;
+    static constexpr size_t kLegGridSize = 7U;
+    static constexpr size_t kGainTableSize = kLegGridSize * kLegGridSize;
+    using GainMatrix = Eigen::Matrix<double, 4, 10>;
 
     bool update_lqr_k(const std::array<float, 10>& q_diag,
                       const std::array<float, 4>& r_diag,
@@ -71,7 +74,6 @@ private:
     // concrete core controller can be replaced without changing the wrapper.
     std::unique_ptr<ControllerBase> controller_;
     ControllerAT* controller_at_{nullptr};
-    LQRCalc lqr_calc_;
 
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
         cmd_vel_subscriber_;
@@ -87,6 +89,7 @@ private:
 
     std::atomic<float> expected_velocity_{0.0F};
     std::atomic<float> expected_omega_{0.0F};
+    std::atomic<float> expected_height_{0.25F};
     int requested_mode_{0};
     double effort_limit_{20.0};
     std::string imu_topic_{"/imu_imu_sensor/imu"};
@@ -95,7 +98,8 @@ private:
     std::array<float, 10> q_diag_ = {1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
                                      1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
     std::array<float, 4> r_diag_ = {1.0F, 1.0F, 1.0F, 1.0F};
-    Eigen::Matrix<double, 4, 10> K_ = Eigen::Matrix<double, 4, 10>::Zero();
+    std::array<GainMatrix, kGainTableSize> K_table_{};
+    bool gain_table_configured_{false};
     mutable std::mutex gain_mutex_;
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
         parameter_callback_handle_;
