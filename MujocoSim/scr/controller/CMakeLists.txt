@@ -62,7 +62,6 @@ add_library(lqr_controller SHARED
   src/controller/vir_motor.cpp
   ${CORE_SOURCE_DIR}/src/controller/controller_6x.cpp
   ${CORE_SOURCE_DIR}/src/controller/controller_at.cpp
-  ${CORE_SOURCE_DIR}/src/tools/estimater.cpp
   ${CORE_SOURCE_DIR}/src/tools/leg_calc.cpp
   ${CORE_SOURCE_DIR}/src/tools/lqr_calc.cpp
   ${CORE_SOURCE_DIR}/src/tools/pid.cpp

@@ -16,6 +16,13 @@ ControllerAT::ControllerAT(IMUBase* imu,
                            DebugLogger debug_logger)
     : ControllerBase(imu, lf, rf, lb, rb, lw, rw, std::move(debug_logger))
     , gain_scheduler_func(std::move(func))
+    , ds_filter_(0.07)
+    , dphi_filter_(0.7)
+    , dthll_filter_(0.7)
+    , dthlr_filter_(0.7)
+    , dthb_filter_(0.7)
+    , left_leg_force_filter_(0.1)
+    , right_leg_force_filter_(0.1)
     , left_leg_length(1000.0f, 15.0f, 0.0f, 0.0f, 200.0f, 0.002f)
     , right_leg_length(1000.0f, 15.0f, 0.0f, 0.0f, 200.0f, 0.002f) {
     if (p_param != nullptr) {
@@ -75,6 +82,15 @@ bool ControllerAT::update(uint64_t ms) {
     K_air(2, 5) = K(2, 5);
     K_air(3, 6) = K(3, 6);
     K_air(3, 7) = K(3, 7);
+
+    // 单轮接地时保留接地轮的平衡控制，以及两条腿各自的姿态稳定项。
+    // u = [Twl, Twr, Tbl, Tbr]，因此左轮接地对应 K 的第 0 行，
+    // 右轮接地对应 K 的第 1 行。
+    K_right_air = K_air;
+    K_right_air.row(0) = K.row(0);
+
+    K_left_air = K_air;
+    K_left_air.row(1) = K.row(1);
 
     if (state == IDEL) {
         lf->set_command(-0.785f, 0.0F, 0.0F, param.motor_kp, param.motor_kd);
@@ -238,6 +254,8 @@ bool ControllerAT::update(uint64_t ms) {
         leg_calc_->forward_dynamics(left_joint_pos, Eigen::Vector2d(lf->state.toqeue,lb->state.toqeue), left_leg_force);
         leg_calc_->forward_dynamics(right_joint_pos, Eigen::Vector2d(rf->state.toqeue,rb->state.toqeue), right_leg_force);
 
+        const double left_leg_force_filtered = left_leg_force_filter_.update(left_leg_force[0]);
+        const double right_leg_force_filtered = right_leg_force_filter_.update(right_leg_force[0]);
         
         //填写状态向量
         // x = sp.Matrix([
@@ -260,11 +278,11 @@ bool ControllerAT::update(uint64_t ms) {
         double dthll=dthb+left_leg_vel[1];
         double dthlr=dthb+right_leg_vel[1];
 
-        ds = ds_filter_.update(ds, 0.07);
-        dphi = dphi_filter_.update(dphi, 0.7);
-        dthll = dthll_filter_.update(dthll, 0.7);
-        dthlr = dthlr_filter_.update(dthlr, 0.7);
-        dthb = dthb_filter_.update(dthb, 0.7);
+        ds = ds_filter_.update(ds);
+        dphi = dphi_filter_.update(dphi);
+        dthll = dthll_filter_.update(dthll);
+        dthlr = dthlr_filter_.update(dthlr);
+        dthb = dthb_filter_.update(dthb);
 
         x<<s,ds,phi,dphi,thll,dthll,thlr,dthlr,thb,dthb;
         debug_log("x:[%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf]",
@@ -279,21 +297,23 @@ bool ControllerAT::update(uint64_t ms) {
         
         //接触状态判断
         //debug_log("left_force:%lf,right_force:%lf", left_leg_force[0],right_leg_force[0]);
-        debug_log("left_length:%lf,right_length:%lf", left_leg_pos[0],right_leg_pos[0]);
+        debug_log("left_length:%lf,right_length:%lf,left_force:%lf,right_force:%lf",
+                  left_leg_pos[0], right_leg_pos[0],
+                  left_leg_force_filtered, right_leg_force_filtered);
         
         
-        if(left_leg_force[0]>25.0&&right_leg_force[0]>25.0) //两轮接地
+        if(left_leg_force_filtered > 25.0 && right_leg_force_filtered > 25.0) //两轮接地
         {
             u=K*(xd-x);
         }
-        // else if(left_leg_force[0]>30.0&&right_leg_force[0]<30.0) //左轮接地
-        // {
-        //     u=K_air*(xd-x);
-        // }
-        // else if(left_leg_force[0]<30.0&&right_leg_force[0]>30.0) //右轮接地
-        // {
-        //     u=K_air*(xd-x);
-        // }
+        else if(left_leg_force_filtered > 25.0 && right_leg_force_filtered < 25.0) //左轮接地
+        {
+            u=K_right_air*(xd-x);
+        }
+        else if(left_leg_force_filtered < 25.0 && right_leg_force_filtered > 25.0) //右轮接地
+        {
+            u=K_left_air*(xd-x);
+        }
         else //左右轮都没有接地
         {
             u=K_air*(xd-x);

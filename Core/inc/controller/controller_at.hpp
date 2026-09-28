@@ -69,6 +69,8 @@ private:
     LowPassFilter dthll_filter_;
     LowPassFilter dthlr_filter_;
     LowPassFilter dthb_filter_;
+    LowPassFilter left_leg_force_filter_;
+    LowPassFilter right_leg_force_filter_;
     PID left_leg_length;
     PID right_leg_length;
     RobotState state{KINAMIC_TEST};
