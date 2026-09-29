@@ -24,8 +24,8 @@ ControllerAT::ControllerAT(
     , dthb_filter_(0.7)
     , left_leg_force_filter_(0.3)
     , right_leg_force_filter_(0.3)
-    , left_leg_length(1000.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
-    , right_leg_length(1000.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f) {
+    , left_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
+    , right_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f) {
     if (p_param != nullptr) {
         param = *p_param;
     }
@@ -302,13 +302,16 @@ bool ControllerAT::update(uint64_t ms) {
             right_leg_force_filtered);
 
 
-        if (left_leg_force_filtered > 25.0 && right_leg_force_filtered > 25.0)        // 两轮接地
+        const bool left_in_contact  = left_leg_force_filtered > 25.0;
+        const bool right_in_contact = right_leg_force_filtered > 25.0;
+
+        if (left_in_contact && right_in_contact)        // 两轮接地
         {
             u = K * (xd - x);
-        } else if (left_leg_force_filtered > 25.0 && right_leg_force_filtered < 25.0) // 左轮接地
+        } else if (left_in_contact && !right_in_contact) // 左轮接地
         {
             u = K_right_air * (xd - x);
-        } else if (left_leg_force_filtered < 25.0 && right_leg_force_filtered > 25.0) // 右轮接地
+        } else if (!left_in_contact && right_in_contact) // 右轮接地
         {
             u = K_left_air * (xd - x);
         } else                                                                        // 左右轮都没有接地
@@ -329,8 +332,18 @@ bool ControllerAT::update(uint64_t ms) {
         Eigen::Vector2d left_leg_exp_force, right_leg_exp_force, left_joint_torque, right_joint_torque;
         left_leg_exp_force[1]  = u[2];
         right_leg_exp_force[1] = u[3];
-        left_leg_exp_force[0]  = left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height);
-        right_leg_exp_force[0] = right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height);
+        double left_gravity_ff  = 0.0;
+        double right_gravity_ff = 0.0;
+        if (left_in_contact && right_in_contact) {
+            left_gravity_ff  = 0.5 * Mb * 9.8 * std::cos(thll);
+            right_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thlr);
+        } else if (left_in_contact) {
+            left_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thll);
+        } else if (right_in_contact) {
+            right_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thlr);
+        }
+        left_leg_exp_force[0]  = left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff;
+        right_leg_exp_force[0] = right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff;
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 
