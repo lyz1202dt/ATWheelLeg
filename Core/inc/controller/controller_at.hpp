@@ -80,10 +80,12 @@ private:
     LowPassFilter dthll_filter_;
     LowPassFilter dthlr_filter_;
     LowPassFilter dthb_filter_;
+    LowPassFilter roll_rate_filter_;
     LowPassFilter left_leg_force_filter_;
     LowPassFilter right_leg_force_filter_;
     PID left_leg_length;
     PID right_leg_length;
+    PID roll_pd;
     RobotState state{KINAMIC_TEST};
     double ref_pos{0.0},ref_vel{0.0},ref_phi{0.0f},ref_omega{0.0},ref_height{0.25f};
 

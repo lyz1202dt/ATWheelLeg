@@ -22,10 +22,12 @@ ControllerAT::ControllerAT(
     , dthll_filter_(0.7)
     , dthlr_filter_(0.7)
     , dthb_filter_(0.7)
+    , roll_rate_filter_(0.7)
     , left_leg_force_filter_(0.3)
     , right_leg_force_filter_(0.3)
     , left_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
-    , right_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f) {
+    , right_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
+    , roll_pd(500.0f, 200.0f, 0.0f, 0.0f, 80.0f, 0.002f) {
     if (p_param != nullptr) {
         param = *p_param;
     }
@@ -226,7 +228,7 @@ bool ControllerAT::update(uint64_t ms) {
         const Eigen::Vector3d forward_in_world(std::cos(yaw), std::sin(yaw), 0.0);
         const double ax = forward_in_world.dot(acceleration_in_world);
 
-        if (std::abs(roll) > 0.2f || std::abs(pitch) > 0.3f) {
+        if (std::abs(roll) > 0.35f || std::abs(pitch) > 0.3f) {
             state = READY_STAND1;
             return true;
         }
@@ -330,6 +332,10 @@ bool ControllerAT::update(uint64_t ms) {
         const float right_ref_height =
             static_cast<float>(std::clamp(static_cast<double>(ref_height) - 0.5 * leg_length_difference, 0.25, 0.4));
 
+        const double roll_rate     = roll_rate_filter_.update(angular_velocity[0]);
+        const double roll_pd_force = roll_pd.update(
+            roll, roll_rate, 0.0f);
+
         const double safe_body_width = std::max(std::abs(BodyWidth), 1.0e-6);
         const double average_leg_length = 0.5 * (left_leg_pos[0] + right_leg_pos[0]);
         const double com_height = average_leg_length + Rw + BaseLinkComHeight;
@@ -359,9 +365,11 @@ bool ControllerAT::update(uint64_t ms) {
             right_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thlr);
         }
         left_leg_exp_force[0] =
-            left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff - centrifugal_force_ff;
+            left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff - centrifugal_force_ff
+            + roll_pd_force;
         right_leg_exp_force[0] =
-            right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff + centrifugal_force_ff;
+            right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff + centrifugal_force_ff
+            - roll_pd_force;
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 
