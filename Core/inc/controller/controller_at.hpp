@@ -7,16 +7,21 @@
 #include "tools/leg_calc.hpp"
 #include "tools/pid.hpp"
 #include "tools/slope.hpp"
+#include "tools/estimater.hpp"
 #include <Eigen/Dense>
-#include <Eigen/src/Core/Matrix.h>
 #include <cmath>
 #include <functional>
 #include <memory>
-#include <type_traits>
+
 
 
 class ControllerAT : public ControllerBase {
 public:
+
+    static constexpr double Rw=0.058;
+    static constexpr double Mw=0.47;
+    static constexpr double Mb=10.51;
+
     using GainSchedulerFunc = std::function<bool(
         const double& left_leg_length,
         const double& right_leg_length,
@@ -63,6 +68,7 @@ private:
     bool reset_traj_generated{false};
     uint64_t time_point{0U};
 
+    kf::KalmanFilter<2, 1, 1> wheel_kf;
     LowPassFilter ds_filter_;
     LowPassFilter dphi_filter_;
     LowPassFilter dthll_filter_;
@@ -79,4 +85,6 @@ private:
     double yaw_previous_{0.0};
     double yaw_unwrapped_{0.0};
     double yaw_reference_{0.0};
+
+    Eigen::Vector4d u{Eigen::Vector4d::Zero()};
 };

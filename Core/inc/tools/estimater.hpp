@@ -157,3 +157,127 @@ private:
 
 
 } // namespace ekf
+
+
+namespace kf {
+template<int NX, int NU, int NY>
+class KalmanFilter
+{
+public:
+    // 类型别名
+    using StateVec    = Eigen::Matrix<double, NX, 1>;       // 状态向量 x
+    using ControlVec  = Eigen::Matrix<double, NU, 1>;       // 控制输入 u
+    using MeasVec     = Eigen::Matrix<double, NY, 1>;       // 观测向量 y
+    using StateMat    = Eigen::Matrix<double, NX, NX>;      // 状态转移矩阵 A
+    using ControlMat  = Eigen::Matrix<double, NX, NU>;      // 控制矩阵 B
+    using MeasMat     = Eigen::Matrix<double, NY, NX>;      // 观测矩阵 H
+    using ProcessNoiseMat = Eigen::Matrix<double, NX, NX>;  // 过程噪声协方差 Q
+    using MeasNoiseMat    = Eigen::Matrix<double, NY, NY>;  // 观测噪声协方差 R
+    using GainMat         = Eigen::Matrix<double, NX, NY>;  // 卡尔曼增益 K
+    using CovMat          = Eigen::Matrix<double, NX, NX>;  // 状态协方差 P
+
+public:
+    // ============ 公共成员变量：系统矩阵 ============
+    StateMat   A;    // 状态转移矩阵
+    ControlMat B;    // 控制输入矩阵
+    MeasMat    H;    // 观测矩阵
+
+    // ============ 公共成员变量：噪声协方差 ============
+    ProcessNoiseMat Q;   // 过程噪声协方差
+    MeasNoiseMat    R;   // 观测噪声协方差
+
+public:
+    KalmanFilter(const StateMat &A,const ControlMat &B,const MeasMat &C,const ProcessNoiseMat &Q,const MeasNoiseMat &R)
+        : A(A)
+        , B(B)
+        , H(C)
+        , Q(Q)
+        , R(R)
+        , x_(StateVec::Zero())
+        , P_(CovMat::Identity())
+        , I_(StateMat::Identity())
+    {}
+
+    /**
+     * @brief 重置滤波器状态和协方差
+     * @param x 初始状态
+     * @param p 初始协方差
+     */
+    void reset(const StateVec& x, const CovMat& p)
+    {
+        x_ = x;
+        P_ = p;
+    }
+
+    /**
+     * @brief 重置滤波器（仅状态）
+     */
+    void reset(const StateVec& x)
+    {
+        x_ = x;
+    }
+
+    /**
+     * @brief 重置滤波器（仅协方差）
+     */
+    void reset(const CovMat& p)
+    {
+        P_ = p;
+    }
+
+    /**
+     * @brief 卡尔曼滤波更新（预测 + 校正）
+     * @param y   观测值
+     * @param u   控制输入
+     * @param ey  输出：观测残差 y - H*x（先验残差）
+     */
+    void update(const MeasVec& y, const ControlVec& u)
+    {
+        // ---------- 1. 预测（Time Update） ----------
+        // 状态预测: x = A*x + B*u
+        x_ = A * x_ + B * u;
+
+        // 协方差预测: P = A*P*A' + Q
+        P_ = A * P_ * A.transpose() + Q;
+
+        // ---------- 2. 校正（Measurement Update） ----------
+        // 观测残差: ey = y - H*x
+        MeasVec ey_ = y - H * x_;
+
+        // 残差协方差: S = H*P*H' + R
+        Eigen::Matrix<double, NY, NY> S = H * P_ * H.transpose() + R;
+
+        // 卡尔曼增益: K = P*H'*S^{-1}
+        // 使用 solve 而非显式求逆，数值更稳定
+        GainMat K = P_ * H.transpose() * S.inverse();
+
+        // 状态更新: x = x + K*ey
+        x_ = x_ + K * ey_;
+
+        // 协方差更新: P = (I - K*H)*P
+        //P_ = (I_ - K * H) * P_;
+
+        // 若需要数值稳定性，可改用 Joseph 形式：
+        P_ = (I_ - K*H) * P_ * (I_ - K*H).transpose() + K * R * K.transpose();
+    }
+
+    /**
+     * @brief 仅预测（无观测时使用）
+     */
+    void predict(const ControlVec& u)
+    {
+        x_ = A * x_ + B * u;
+        P_ = A * P_ * A.transpose() + Q;
+    }
+
+    // ============ 访问器 ============
+    const StateVec& state() const { return x_; }
+    const CovMat&   covariance() const { return P_; }
+
+private:
+    StateVec x_;   // 状态估计
+    CovMat   P_;   // 状态协方差
+    StateMat I_;   // 单位矩阵
+};
+
+}
