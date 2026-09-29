@@ -1,14 +1,16 @@
 #include "controller/controller_at.hpp"
 #include <Eigen/src/Core/Matrix.h>
+#include <tinympc/tiny_api.hpp>
 #include <algorithm>
 #include <cmath>
 #include <utility>
 
 ControllerAT::ControllerAT(
-    IMUBase* imu, Motor* lf, Motor* rf, Motor* lb, Motor* rb, Motor* lw, Motor* rw, GainSchedulerFunc func, Param* p_param,
-    DebugLogger debug_logger)
+    IMUBase* imu, Motor* lf, Motor* rf, Motor* lb, Motor* rb, Motor* lw, Motor* rw, GainSchedulerFunc func,
+    ABSchedulerFunc ab_func, Param* p_param, DebugLogger debug_logger)
     : ControllerBase(imu, lf, rf, lb, rb, lw, rw, std::move(debug_logger))
     , gain_scheduler_func(std::move(func))
+    , ab_scheduler_func(std::move(ab_func))
     , wheel_kf(
           (Eigen::Matrix2d() << 1.0, 0.002, 0.0, 1.0).finished(),
           (Eigen::Matrix<double, 2, 1>() << 0.5 * 0.002 * 0.002,
@@ -25,14 +27,27 @@ ControllerAT::ControllerAT(
     , roll_rate_filter_(0.7)
     , left_leg_force_filter_(0.3)
     , right_leg_force_filter_(0.3)
-    , left_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
-    , right_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
+    , left_leg_length(600.0f, 50.0f, 0.0f, 0.0f, 200.0f, 0.002f)
+    , right_leg_length(600.0f, 50.0f, 0.0f, 0.0f, 200.0f, 0.002f)
     , roll_pd(500.0f, 200.0f, 0.0f, 0.0f, 80.0f, 0.002f) {
     if (p_param != nullptr) {
         param = *p_param;
     }
     leg_calc_ = std::make_unique<OffsetParallelCalc>(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
     wheel_kf.reset(Eigen::Vector2d::Zero(), Eigen::Matrix2d::Identity() * 10.0);
+    tiny_mpc_initialized_ = initialize_tiny_mpc();
+}
+
+ControllerAT::~ControllerAT() {
+    auto* solver = tiny_mpc_solver_;
+    if (solver == nullptr) {
+        return;
+    }
+    delete solver->solution;
+    delete solver->settings;
+    delete solver->cache;
+    delete solver->work;
+    delete solver;
 }
 
 double ControllerAT::wrap_to_pi(double angle) {
@@ -56,6 +71,132 @@ bool ControllerAT::extract_ypr(const Eigen::Quaternionf& orientation, double& ya
     roll                           = std::atan2(rotation(2, 1), rotation(2, 2));
 
     return true;
+}
+
+struct ControllerAT::MpcModel {
+    tinyMatrix A;
+    tinyMatrix B;
+    TinyCache cache;
+    bool valid{false};
+};
+
+bool ControllerAT::initialize_tiny_mpc() {
+    if (!ab_scheduler_func) {
+        return false;
+    }
+    Eigen::Matrix<double, 10, 10> initial_A;
+    Eigen::Matrix<double, 10, 4> initial_B;
+    if (!ab_scheduler_func(0.25, 0.25, initial_A, initial_B) ||
+        !initial_A.allFinite() || !initial_B.allFinite()) {
+        return false;
+    }
+    tinyMatrix A = initial_A;
+    tinyMatrix B = initial_B;
+    tinyVector f = tinyVector::Zero(kMpcStateSize);
+    tinyMatrix Q = mpc_q_diag_.asDiagonal();
+    tinyMatrix R = mpc_r_diag_.asDiagonal();
+
+    TinySolver* solver = nullptr;
+    if (tiny_setup(&solver, A, B, f, Q, R, kMpcRho, kMpcStateSize, kMpcInputSize, kMpcHorizon, 0) != 0 ||
+        solver == nullptr) {
+        tiny_mpc_solver_ = solver;
+        return false;
+    }
+
+    solver->settings->max_iter = 50;
+    solver->settings->check_termination = 1;
+    solver->settings->abs_pri_tol = 1.0e-3;
+    solver->settings->abs_dua_tol = 1.0e-3;
+
+    tinyMatrix x_min = tinyMatrix::Constant(kMpcStateSize, kMpcHorizon, -1.0e6);
+    tinyMatrix x_max = tinyMatrix::Constant(kMpcStateSize, kMpcHorizon, 1.0e6);
+    tinyMatrix u_min = tinyMatrix::Zero(kMpcInputSize, kMpcHorizon - 1);
+    tinyMatrix u_max = tinyMatrix::Zero(kMpcInputSize, kMpcHorizon - 1);
+    u_min.row(0).setConstant(-kMpcWheelTorqueLimit);
+    u_min.row(1).setConstant(-kMpcWheelTorqueLimit);
+    u_min.row(2).setConstant(-kMpcLegTorqueLimit);
+    u_min.row(3).setConstant(-kMpcLegTorqueLimit);
+    u_max.row(0).setConstant(kMpcWheelTorqueLimit);
+    u_max.row(1).setConstant(kMpcWheelTorqueLimit);
+    u_max.row(2).setConstant(kMpcLegTorqueLimit);
+    u_max.row(3).setConstant(kMpcLegTorqueLimit);
+
+    if (tiny_set_bound_constraints(solver, x_min, x_max, u_min, u_max) != 0) {
+        tiny_mpc_solver_ = solver;
+        return false;
+    }
+
+    tiny_mpc_solver_ = solver;
+    mpc_models_ = std::make_unique<std::array<MpcModel, kMpcGridSize * kMpcGridSize>>();
+    for (int left = 0; left < kMpcGridSize; ++left) {
+        for (int right = 0; right < kMpcGridSize; ++right) {
+            auto& model = (*mpc_models_)[left * kMpcGridSize + right];
+            Eigen::Matrix<double, 10, 10> ad;
+            Eigen::Matrix<double, 10, 4> bd;
+            const double left_length = 0.10 + left * 0.05;
+            const double right_length = 0.10 + right * 0.05;
+            if (!ab_scheduler_func(left_length, right_length, ad, bd) ||
+                !ad.allFinite() || !bd.allFinite()) {
+                continue;
+            }
+            model.A = ad;
+            model.B = bd;
+            model.valid = tiny_precompute_and_set_cache(
+                &model.cache, model.A, model.B, f, Q, R,
+                kMpcStateSize, kMpcInputSize, kMpcRho, 0) == 0 &&
+                model.cache.Kinf.allFinite() && model.cache.Pinf.allFinite() &&
+                model.cache.Quu_inv.allFinite();
+        }
+    }
+    return true;
+}
+
+bool ControllerAT::solve_two_wheel_mpc(const Eigen::Vector<double, 10>& x,
+                                       const Eigen::Vector<double, 10>& xd,
+                                       double left_leg_length,
+                                       double right_leg_length,
+                                       Eigen::Vector4d& control) {
+    auto* solver = tiny_mpc_solver_;
+    if (!tiny_mpc_initialized_ || solver == nullptr || !x.allFinite() || !xd.allFinite() ||
+        !std::isfinite(left_leg_length) || !std::isfinite(right_leg_length)) {
+        return false;
+    }
+    const auto grid_index = [](double length) {
+        return std::clamp(static_cast<int>(std::lround((length - 0.10) / 0.05)), 0, kMpcGridSize - 1);
+    };
+    const int index = grid_index(left_leg_length) * kMpcGridSize + grid_index(right_leg_length);
+    const auto& model = (*mpc_models_)[index];
+    if (!model.valid) {
+        return false;
+    }
+    if (mpc_model_index_ != index) {
+        solver->work->Adyn = model.A;
+        solver->work->Bdyn = model.B;
+        *solver->cache = model.cache;
+        mpc_model_index_ = index;
+    }
+
+    tinyVector x0 = x;
+    tinyMatrix x_ref = tinyMatrix::Zero(kMpcStateSize, kMpcHorizon);
+    for (int index = 0; index < kMpcHorizon; ++index) {
+        x_ref.col(index) = xd;
+        const double horizon_time = static_cast<double>(index) * kMpcDt;
+        x_ref(0, index) = xd[0] + xd[1] * horizon_time;
+        x_ref(1, index) = xd[1];
+        x_ref(2, index) = xd[2] + xd[3] * horizon_time;
+        x_ref(3, index) = xd[3];
+    }
+    tinyMatrix u_ref = tinyMatrix::Zero(kMpcInputSize, kMpcHorizon - 1);
+
+    if (tiny_set_x0(solver, x0) != 0 ||
+        tiny_set_x_ref(solver, x_ref) != 0 ||
+        tiny_set_u_ref(solver, u_ref) != 0) {
+        return false;
+    }
+
+    (void)tiny_solve(solver);
+    control = solver->solution->u.col(0);
+    return control.allFinite();
 }
 
 bool ControllerAT::update(uint64_t ms) {
@@ -311,7 +452,13 @@ bool ControllerAT::update(uint64_t ms) {
 
         if (left_in_contact && right_in_contact)        // 两轮接地
         {
-            u = K * (xd - x);
+            if (!solve_two_wheel_mpc(x, xd, left_leg_pos[0], right_leg_pos[0], u)) {
+                u = K * (xd - x);
+                debug_log("solve_failed");
+            }
+            else {
+                debug_log("solve_success");
+            }
         } else if (left_in_contact && !right_in_contact) // 左轮接地
         {
             u = K_right_air * (xd - x);

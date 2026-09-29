@@ -49,6 +49,20 @@ if(NOT TARGET autodiff::autodiff)
     )
 endif()
 
+if(NOT TARGET tinympcstatic)
+    add_subdirectory(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/TinyMPC/src/tinympc"
+        "${CMAKE_CURRENT_BINARY_DIR}/tinympc"
+        EXCLUDE_FROM_ALL
+    )
+endif()
+include(GNUInstallDirs)
+set_property(TARGET tinympcstatic PROPERTY INTERFACE_INCLUDE_DIRECTORIES
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../third_party/TinyMPC/src>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../third_party/TinyMPC/include/Eigen>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+)
+
 # ---------------------------------------------------------------------------
 # Core library
 # ---------------------------------------------------------------------------
@@ -66,7 +80,7 @@ target_include_directories(core PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(core PUBLIC Eigen3::Eigen autodiff::autodiff)
+target_link_libraries(core PUBLIC Eigen3::Eigen autodiff::autodiff tinympcstatic)
 
 # Allow the static library to be linked into shared libraries later.
 set_target_properties(core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -93,6 +107,10 @@ if(CORE_BUILD_TESTS)
     target_link_libraries(core_test PRIVATE core)
 
     add_test(NAME core_test COMMAND core_test)
+
+    add_executable(controller_at_mpc_test src/controller_at_mpc_test.cpp)
+    target_link_libraries(controller_at_mpc_test PRIVATE core)
+    add_test(NAME controller_at_mpc_test COMMAND controller_at_mpc_test)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -101,7 +119,7 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-install(TARGETS core
+install(TARGETS core tinympcstatic
     EXPORT CoreTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -109,6 +127,11 @@ install(TARGETS core
 )
 
 install(DIRECTORY inc/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY ../third_party/TinyMPC/src/tinympc/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/tinympc
+    FILES_MATCHING PATTERN "*.hpp")
+install(FILES ../third_party/TinyMPC/include/Eigen/Eigen.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 install(EXPORT CoreTargets
     FILE CoreTargets.cmake

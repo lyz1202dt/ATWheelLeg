@@ -342,6 +342,69 @@ bool interpolate_gain(const double left_leg_length,
     return gain.allFinite();
 }
 
+bool discrete_at_model(const double left_leg_length,
+                       const double right_leg_length,
+                       Eigen::Matrix<double, 10, 10>& ad,
+                       Eigen::Matrix<double, 10, 4>& bd)
+{
+    GridCoordinate left;
+    GridCoordinate right;
+    if (!locate_grid_coordinate(left_leg_length, left) ||
+        !locate_grid_coordinate(right_leg_length, right)) {
+        return false;
+    }
+    const auto index = [](std::size_t l, std::size_t r) {
+        return l * kAtLegGridSize + r;
+    };
+    const double wl = left.fraction;
+    const double wr = right.fraction;
+    const double w00 = (1.0 - wl) * (1.0 - wr);
+    const double w10 = wl * (1.0 - wr);
+    const double w01 = (1.0 - wl) * wr;
+    const double w11 = wl * wr;
+    const Eigen::Matrix<double, 10, 10> ac =
+        w00 * make_lqr_at_a(index(left.lower_index, right.lower_index)) +
+        w10 * make_lqr_at_a(index(left.upper_index, right.lower_index)) +
+        w01 * make_lqr_at_a(index(left.lower_index, right.upper_index)) +
+        w11 * make_lqr_at_a(index(left.upper_index, right.upper_index));
+    const Eigen::Matrix<double, 10, 4> bc =
+        w00 * make_lqr_at_b(index(left.lower_index, right.lower_index)) +
+        w10 * make_lqr_at_b(index(left.upper_index, right.lower_index)) +
+        w01 * make_lqr_at_b(index(left.lower_index, right.upper_index)) +
+        w11 * make_lqr_at_b(index(left.upper_index, right.upper_index));
+
+    // exp([Ac Bc; 0 0] * dt) = [Ad Bd; 0 I] for a zero-order held input.
+    Eigen::Matrix<double, 14, 14> augmented = Eigen::Matrix<double, 14, 14>::Zero();
+    augmented.topLeftCorner<10, 10>() = ac;
+    augmented.topRightCorner<10, 4>() = bc;
+    Eigen::Matrix<double, 14, 14> scaled = augmented * 0.002;
+    int squarings = 0;
+    while (scaled.cwiseAbs().rowwise().sum().maxCoeff() > 0.5) {
+        scaled *= 0.5;
+        ++squarings;
+    }
+    Eigen::Matrix<double, 14, 14> discrete = Eigen::Matrix<double, 14, 14>::Identity();
+    Eigen::Matrix<double, 14, 14> term = discrete;
+    bool converged = false;
+    for (int n = 1; n <= 40; ++n) {
+        term = (term * scaled).eval() / static_cast<double>(n);
+        discrete += term;
+        if (term.cwiseAbs().maxCoeff() < 1e-16) {
+            converged = true;
+            break;
+        }
+    }
+    if (!converged) {
+        return false;
+    }
+    for (int i = 0; i < squarings; ++i) {
+        discrete = (discrete * discrete).eval();
+    }
+    ad = discrete.topLeftCorner<10, 10>();
+    bd = discrete.topRightCorner<10, 4>();
+    return ad.allFinite() && bd.allFinite();
+}
+
 template <typename Interface>
 Interface* find_interface(std::vector<Interface>& interfaces, const std::string& name) {
     const auto iterator =
@@ -412,7 +475,8 @@ LQRControllerAT::LQRControllerAT() {
     };
 
     auto controller = std::make_unique<::ControllerAT>(
-        &imu_, &lf_motor_, &rf_motor_, &lb_motor_, &rb_motor_, &lw_motor_, &rw_motor_, gain_scheduler);
+        &imu_, &lf_motor_, &rf_motor_, &lb_motor_, &rb_motor_, &lw_motor_, &rw_motor_,
+        gain_scheduler, discrete_at_model);
     controller_at_ = controller.get();
     controller->set_debug_logger(
         [this](const char* message) { RCLCPP_INFO(get_node()->get_logger(), "%s", message == nullptr ? "" : message); });

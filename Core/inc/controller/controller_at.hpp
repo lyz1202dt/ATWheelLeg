@@ -9,11 +9,11 @@
 #include "tools/slope.hpp"
 #include "tools/estimater.hpp"
 #include <Eigen/Dense>
+#include <tinympc/types.hpp>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <memory>
-
-
 
 class ControllerAT : public ControllerBase {
 public:
@@ -30,6 +30,11 @@ public:
         const double& left_leg_length,
         const double& right_leg_length,
         Eigen::Matrix<double, 4, 10>& K)>;
+    using ABSchedulerFunc = std::function<bool(
+        const double& left_leg_length,
+        const double& right_leg_length,
+        Eigen::Matrix<double, 10, 10>& A,
+        Eigen::Matrix<double, 10, 4>& B)>;
     enum RobotState {
         IDEL,         // 位控处于默认站姿
         KINAMIC_TEST,   //运动学测试
@@ -53,13 +58,17 @@ public:
                  Motor* lw,
                  Motor* rw,
                  GainSchedulerFunc func,
+                 ABSchedulerFunc ab_func,
                  Param *p_param=nullptr,
                  DebugLogger debug_logger = nullptr);
+    ~ControllerAT() override;
+
     bool update(uint64_t ms) override;
     void input(float velocity, float omega, float height, int mode) override;
 
     std::unique_ptr<LegCalcBase> leg_calc_;
     GainSchedulerFunc gain_scheduler_func;
+    ABSchedulerFunc ab_scheduler_func;
     RobotState exp_state{KINAMIC_TEST};
     Param param;
     Eigen::Matrix<double,4,10> K,K_left_air,K_right_air,K_air;
@@ -69,6 +78,12 @@ private:
                             double& yaw,
                             double& pitch,
                             double& roll);
+    bool initialize_tiny_mpc();
+    bool solve_two_wheel_mpc(const Eigen::Vector<double, 10>& x,
+                             const Eigen::Vector<double, 10>& xd,
+                             double left_leg_length,
+                             double right_leg_length,
+                             Eigen::Vector4d& control);
 
     Slope<Eigen::Vector2d> left_leg_slope,right_leg_slope;
     bool reset_traj_generated{false};
@@ -95,4 +110,24 @@ private:
     double yaw_reference_{0.0};
 
     Eigen::Vector4d u{Eigen::Vector4d::Zero()};
+
+    static constexpr int kMpcStateSize = 10;
+    static constexpr int kMpcInputSize = 4;
+    static constexpr int kMpcHorizon = 10;
+    static constexpr double kMpcDt = 0.002;
+    static constexpr double kMpcRho = 1.0;
+    static constexpr int kMpcGridSize = 7;
+    static constexpr double kMpcWheelTorqueLimit = 6.0;
+    static constexpr double kMpcLegTorqueLimit = 30.0;
+    struct MpcModel;
+    TinySolver* tiny_mpc_solver_{nullptr};
+    bool tiny_mpc_initialized_{false};
+    std::unique_ptr<std::array<MpcModel, kMpcGridSize * kMpcGridSize>> mpc_models_;
+    int mpc_model_index_{-1};
+    Eigen::Matrix<double, kMpcStateSize, 1> mpc_q_diag_{
+        (Eigen::Matrix<double, kMpcStateSize, 1>()
+             << 20.0, 20.0, 25.0, 20.0, 10.0, 10.0, 10.0, 10.0, 2000.0, 80.0)
+            .finished()};
+    Eigen::Matrix<double, kMpcInputSize, 1> mpc_r_diag_{
+        (Eigen::Matrix<double, kMpcInputSize, 1>() << 4.0, 4.0, 1.0, 1.0).finished()};
 };

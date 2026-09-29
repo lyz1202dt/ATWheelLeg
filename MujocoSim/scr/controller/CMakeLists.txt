@@ -39,6 +39,12 @@ if(NOT TARGET autodiff::autodiff)
   )
 endif()
 
+add_subdirectory(
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/TinyMPC/src/tinympc
+  ${CMAKE_CURRENT_BINARY_DIR}/tinympc
+  EXCLUDE_FROM_ALL
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
@@ -89,7 +95,7 @@ target_include_directories(lqr_controller PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(lqr_controller Eigen3::Eigen autodiff::autodiff)
+target_link_libraries(lqr_controller Eigen3::Eigen autodiff::autodiff tinympcstatic)
 
 ament_target_dependencies(
   lqr_controller
