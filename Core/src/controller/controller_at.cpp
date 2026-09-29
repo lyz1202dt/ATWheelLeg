@@ -186,7 +186,7 @@ bool ControllerAT::update(uint64_t ms) {
             }
             debug_log("TOUCH_GROUND:%d", state);
         }
-    } else if (state == LQR_CTRL) {
+    } else if (state == LQR_CTRL||state == LQR_STEP||state==LQR_JUMP) {
 
         Eigen::Quaternionf orientation;
         Eigen::Vector3d angular_velocity;
@@ -281,19 +281,21 @@ bool ControllerAT::update(uint64_t ms) {
         Eigen::Vector2d wheel_state = wheel_kf.state();
 
 
-        if (std::abs(wheel_state[0] - ref_pos) > 2.0f) // 防止位置误差过大导致控制器发散
-            wheel_state[0] = ref_pos + (wheel_state[0] - ref_pos) / std::abs(wheel_state[0] - ref_pos) * 2.0f;
+        if (std::abs(wheel_state[0] - ref_pos) > 5.0f) // 防止位置误差过大导致控制器发散
+            wheel_state[0] = ref_pos + (wheel_state[0] - ref_pos) / std::abs(wheel_state[0] - ref_pos) * 5.0f;
 
         x << wheel_state[0], wheel_state[1], phi, dphi, thll, dthll, thlr, dthlr, thb, dthb;
 
-        // 填写参考输入
+        //填写参考输入
         ref_pos += ref_vel * 0.002f;
         ref_phi += ref_omega * 0.002f;
         xd[0] = ref_pos;
+        xd[1]=ref_vel;
         xd[2] = ref_phi;
+        xd[3]=ref_omega;
 
         // u = sp.Matrix([Twl, Twr, Tbl, Tbr])
-        u = Eigen::Vector4d::Zero(); // 计算LQR控制律
+        u = Eigen::Vector4d::Zero(); // LQR控制律
 
         // 接触状态判断
         // debug_log("left_force:%lf,right_force:%lf", left_leg_force[0],right_leg_force[0]);
@@ -328,6 +330,20 @@ bool ControllerAT::update(uint64_t ms) {
         const float right_ref_height =
             static_cast<float>(std::clamp(static_cast<double>(ref_height) - 0.5 * leg_length_difference, 0.25, 0.4));
 
+        const double safe_body_width = std::max(std::abs(BodyWidth), 1.0e-6);
+        const double average_leg_length = 0.5 * (left_leg_pos[0] + right_leg_pos[0]);
+        const double com_height = average_leg_length + Rw + BaseLinkComHeight;
+        // Use commanded tangential speed and yaw rate for feedforward so IMU
+        // and wheel-speed estimation noise does not directly modulate leg force.
+        const double centripetal_force = Mb * wheel_state[1] * imu->angular_velocity.z();
+        const double centripetal_torque = centripetal_force * com_height;
+        const double centrifugal_force_ff_raw =
+            left_in_contact && right_in_contact
+                ? CentrifugalForceFfGain * centripetal_torque / safe_body_width
+                : 0.0;
+        const double centrifugal_force_ff =
+            std::clamp(centrifugal_force_ff_raw, -CentrifugalForceFfLimit, CentrifugalForceFfLimit);
+
         // 腿长PD控制器
         Eigen::Vector2d left_leg_exp_force, right_leg_exp_force, left_joint_torque, right_joint_torque;
         left_leg_exp_force[1]  = u[2];
@@ -342,8 +358,10 @@ bool ControllerAT::update(uint64_t ms) {
         } else if (right_in_contact) {
             right_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thlr);
         }
-        left_leg_exp_force[0]  = left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff;
-        right_leg_exp_force[0] = right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff;
+        left_leg_exp_force[0] =
+            left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff - centrifugal_force_ff;
+        right_leg_exp_force[0] =
+            right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff + centrifugal_force_ff;
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 

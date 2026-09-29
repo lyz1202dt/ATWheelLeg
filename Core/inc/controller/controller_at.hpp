@@ -21,6 +21,10 @@ public:
     static constexpr double Rw=0.058;
     static constexpr double Mw=0.47;
     static constexpr double Mb=10.51;
+    static constexpr double BodyWidth=0.34;
+    static constexpr double BaseLinkComHeight=-0.0417729612931393;
+    static constexpr double CentrifugalForceFfGain=1.0;
+    static constexpr double CentrifugalForceFfLimit=15.0;
 
     using GainSchedulerFunc = std::function<bool(
         const double& left_leg_length,
@@ -33,6 +37,8 @@ public:
         READY_STAND1,   //斜坡渐变当前期望到准备站立的姿态
         READY_STAND2,   //完成小板凳形态
         LQR_CTRL, // 接触地面，LQR平衡控制
+        LQR_STEP, // LQR上台阶
+        LQR_JUMP  //LQR，跳跃
     };
     struct Param{
         float motor_kp{30.0f};

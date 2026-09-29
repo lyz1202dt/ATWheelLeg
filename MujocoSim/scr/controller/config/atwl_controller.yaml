@@ -31,5 +31,5 @@ at_controller:
     expected_velocity: 0.0
     expected_omega: 0.0
     expected_height: 0.25
-    q_diag: [10.0, 5.0, 5.0, 5.0, 10.0, 10.0, 10.0, 10.0, 2000.0, 80.0]
+    q_diag: [20.0, 20.0, 25.0, 20.0, 10.0, 10.0, 10.0, 10.0, 2000.0, 80.0]
     r_diag: [4.0, 4.0, 1.0, 1.0]
