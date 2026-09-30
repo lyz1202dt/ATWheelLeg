@@ -61,7 +61,7 @@
     <worldbody>
         <body name="terrain_adaptation_course">
             <geom name="ground" type="plane" size="50 50 0.3" pos="0 0 0" material="groundplane"
-                contype="1" conaffinity="1" />
+                contype="1" conaffinity="1" friction="0.1 0.005 0.0001" />
 
             <light name="light" pos="0 0 5" dir="0 0 -1" directional="true" />
 
@@ -80,7 +80,7 @@
             <geom name="sine_ripple_terrain" type="hfield" hfield="sine_ripple_terrain"
                 pos="21.5 0 0" rgba="0.31 0.46 0.36 1" />
 
-            <geom name="terrain_block_4m" type="box" size="2 2 0.1" pos="33.7 0 0.1"
+            <geom name="terrain_block_4m" type="box" size="2 2 0.1" pos="0 5.0 0.1"
                 rgba="0.55 0.50 0.45 1" />
         </body>
     </worldbody>

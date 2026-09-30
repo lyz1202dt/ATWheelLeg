@@ -88,7 +88,41 @@ bool ControllerAT::extract_ypr(const Eigen::Quaternionf& orientation, double& ya
 }
 
 bool ControllerAT::update(uint64_t ms) {
-    if (state != LQR_CTRL) {
+
+    Eigen::Quaternionf orientation;
+    Eigen::Vector3d angular_velocity;
+    Eigen::Vector3d acceleration;
+    bool imu_state_valid;
+    imu->lock_memory();
+    orientation      = imu->orientation;
+    angular_velocity = imu->angular_velocity;
+    acceleration     = imu->acceleration;
+    imu_state_valid  = imu->state_valid_;
+    imu->unlock_memory();
+
+    if (!imu_state_valid || !acceleration.allFinite()) {
+        return false;
+    }
+
+    double yaw;
+    double pitch;
+    double roll;
+    if (!extract_ypr(orientation, yaw, pitch, roll)) {
+        return false;
+    }
+
+    if (!yaw_tracking_initialized_) {
+        yaw_tracking_initialized_ = true;
+        yaw_previous_             = yaw;
+        yaw_unwrapped_            = yaw;
+        yaw_reference_            = yaw;
+    } else {
+        yaw_unwrapped_ += wrap_to_pi(yaw - yaw_previous_);
+        yaw_previous_ = yaw;
+    }
+
+
+    if (state != LQR_CTRL && state != LQR_STEP && state != LQR_JUMP) {
         yaw_tracking_initialized_ = false;
     }
     if (state != LQR_CTRL && state != LQR_STEP && state != LQR_JUMP) {
@@ -221,40 +255,7 @@ bool ControllerAT::update(uint64_t ms) {
             }
             debug_log("TOUCH_GROUND:%d", state);
         }
-    } else if (state == LQR_CTRL || state == LQR_STEP || state == LQR_JUMP) {
-
-        Eigen::Quaternionf orientation;
-        Eigen::Vector3d angular_velocity;
-        Eigen::Vector3d acceleration;
-        bool imu_state_valid;
-        imu->lock_memory();
-        orientation      = imu->orientation;
-        angular_velocity = imu->angular_velocity;
-        acceleration     = imu->acceleration;
-        imu_state_valid  = imu->state_valid_;
-        imu->unlock_memory();
-
-        if (!imu_state_valid || !acceleration.allFinite()) {
-            return false;
-        }
-
-        double yaw;
-        double pitch;
-        double roll;
-        if (!extract_ypr(orientation, yaw, pitch, roll)) {
-            return false;
-        }
-
-        if (!yaw_tracking_initialized_) {
-            yaw_tracking_initialized_ = true;
-            yaw_previous_             = yaw;
-            yaw_unwrapped_            = yaw;
-            yaw_reference_            = yaw;
-        } else {
-            yaw_unwrapped_ += wrap_to_pi(yaw - yaw_previous_);
-            yaw_previous_ = yaw;
-        }
-
+    } else if (state == LQR_CTRL || state == LQR_JUMP) {
         // 取自然坐标系下的加速度
         const Eigen::Matrix3d base_link_to_world    = orientation.toRotationMatrix().cast<double>();
         const Eigen::Vector3d acceleration_in_world = base_link_to_world * acceleration;
@@ -378,50 +379,40 @@ bool ControllerAT::update(uint64_t ms) {
         previous_lqr_command_ = u;
 
 
-        double left_action_ff=0.0,right_action_ff=0.0;
-        if(state==LQR_JUMP)
-        {
-            if(sub_stage==0)    //第一步
+        double left_action_ff = 0.0, right_action_ff = 0.0;
+        if (state == LQR_JUMP) {
+            if (sub_stage == 0)                 // 第一步
             {
-                stage_time_tick=ms;
-                sub_stage=1;
-                ref_height=0.22f;   //降到最低位置
-            }
-            else if(sub_stage==1)
-            {
-                if(ms-stage_time_tick>500) //等待500ms到达最低位置
+                stage_time_tick = ms;
+                sub_stage       = 1;
+                ref_height      = 0.22f;        // 降到最低位置
+            } else if (sub_stage == 1) {
+                if (ms - stage_time_tick > 500) // 等待500ms到达最低位置
                 {
-                    sub_stage=2;
+                    sub_stage = 2;
                 }
-            }
-            else if(sub_stage==2)   //开始跳跃，并等待腿长足够长
+            } else if (sub_stage == 2)          // 开始跳跃，并等待腿长足够长
             {
-                ref_height=0.4f;
-                left_action_ff=70.0f;
-                right_action_ff=70.0f;
-                if((left_leg_pos[0]+right_leg_pos[0])*0.5>0.4)
+                ref_height      = 0.4f;
+                left_action_ff  = 70.0f;
+                right_action_ff = 70.0f;
+                if ((left_leg_pos[0] + right_leg_pos[0]) * 0.5 > 0.4) {
+                    sub_stage = 3;
+                }
+            } else if (sub_stage == 3)          // 收腿
+            {
+                left_action_ff  = 0.0f;
+                right_action_ff = 0.0f;
+                ref_height      = 0.21f;
+                stage_time_tick = ms;
+                sub_stage       = 4;
+            } else if (sub_stage == 4) {
+                if (ms - stage_time_tick > 500) // 等待500ms展开腿部准备落地缓冲
                 {
-                    sub_stage=3;
+                    sub_stage = 5;
                 }
-            }
-            else if(sub_stage==3)   //收腿
-            {
-                left_action_ff=0.0f;
-                right_action_ff=0.0f;
-                ref_height=0.21f;
-                stage_time_tick=ms;
-                sub_stage=4;
-            }
-            else if(sub_stage==4)
-            {
-                if(ms-stage_time_tick>500) //等待500ms展开腿部准备落地缓冲
-                {
-                    sub_stage=5;
-                }
-            }
-            else if(sub_stage==5)
-            {
-                ref_height=0.25f;
+            } else if (sub_stage == 5) {
+                ref_height = 0.25f;
             }
         }
 
@@ -463,9 +454,9 @@ bool ControllerAT::update(uint64_t ms) {
             right_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thlr);
         }
         left_leg_exp_force[0] = left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff
-                              - centrifugal_force_ff + roll_pd_force+left_action_ff;
+                              - centrifugal_force_ff + roll_pd_force + left_action_ff;
         right_leg_exp_force[0] = right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff
-                               + centrifugal_force_ff - roll_pd_force+right_action_ff;
+                               + centrifugal_force_ff - roll_pd_force + right_action_ff;
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 
@@ -481,18 +472,227 @@ bool ControllerAT::update(uint64_t ms) {
             state = KINAMIC_TEST;
         else if (exp_state == IDEL)
             state = IDEL;
-        else if(state==LQR_JUMP&&exp_state==LQR_CTRL)   //从跳跃和爬台阶向LQR前进切换
+        else if (state == LQR_JUMP && exp_state == LQR_CTRL) // 从跳跃LQR前进切换
         {
-            sub_stage=0;
-            state = LQR_CTRL;
-        }else if(state==LQR_STEP&&exp_state==LQR_CTRL)
+            sub_stage = 0;
+            state     = LQR_CTRL;
+        } else if (exp_state == LQR_JUMP)                    // 从LQR前进向跳跃切换
         {
-            sub_stage=0;
-            state = LQR_CTRL;
+            state = exp_state;
+        } else if (
+            exp_state == LQR_STEP && (!finished_step)) { // 没有完成过上台阶，才能切入上台阶，如果刚刚从上台阶状态返回，那么不继续切入上台阶
+            sub_stage = 0;
+            state     = LQR_STEP;
+        } else if (exp_state == LQR_CTRL) {
+            finished_step = false;
         }
-        else if(exp_state==LQR_JUMP||exp_state==LQR_STEP)   //从LQR前进向跳跃或爬台阶切换
+    } else if (state == LQR_STEP) {
+        // 取自然坐标系下的加速度
+        const Eigen::Matrix3d base_link_to_world    = orientation.toRotationMatrix().cast<double>();
+        const Eigen::Vector3d acceleration_in_world = base_link_to_world * acceleration;
+        const Eigen::Vector3d forward_in_world(std::cos(yaw), std::sin(yaw), 0.0);
+        const double ax = forward_in_world.dot(acceleration_in_world);
+
+        // 计算腿的位置，速度，受力
+        Eigen::Vector2d left_joint_pos(lf->state.rad, lb->state.rad);
+        Eigen::Vector2d right_joint_pos(rf->state.rad, rb->state.rad);
+        Eigen::Vector2d left_leg_pos, right_leg_pos, left_leg_vel, right_leg_vel, left_leg_force, right_leg_force;
+        leg_calc_->forward_kinematics(left_joint_pos, left_leg_pos);
+        leg_calc_->forward_kinematics(right_joint_pos, right_leg_pos);
+        leg_calc_->forward_velocity(left_joint_pos, Eigen::Vector2d(lf->state.vel, lb->state.vel), left_leg_vel);
+        leg_calc_->forward_velocity(right_joint_pos, Eigen::Vector2d(rf->state.vel, rb->state.vel), right_leg_vel);
+        leg_calc_->forward_dynamics(left_joint_pos, Eigen::Vector2d(lf->state.toqeue, lb->state.toqeue), left_leg_force);
+        leg_calc_->forward_dynamics(right_joint_pos, Eigen::Vector2d(rf->state.toqeue, rb->state.toqeue), right_leg_force);
+
+        const double left_leg_force_filtered  = left_leg_force_filter_.update(left_leg_force[0]);
+        const double right_leg_force_filtered = right_leg_force_filter_.update(right_leg_force[0]);
+
+        // 填写状态向量
+        //  x = sp.Matrix([
+        //      s, ds,
+        //      phi, dphi,
+        //      thll, dthll,
+        //      thlr, dthlr,
+        //      thb, dthb])
+
+        Eigen::Vector<double, 10> x, xd;
+        xd.setZero();                                      // 参考输入
+        const double wheel_position = 0.5 * (lw->state.rad + rw->state.rad) * Rw;
+        double s                    = wheel_position;
+        double ds                   = 0.5 * (lw->state.vel + rw->state.vel) * Rw;
+        const double phi            = yaw_unwrapped_ - yaw_reference_;
+        double dphi                 = angular_velocity[2];
+        const double thb            = pitch;
+        double dthb                 = angular_velocity[1];
+        const double thll           = wrap_to_pi(thb + left_leg_pos[1]);
+        const double thlr           = wrap_to_pi(thb + right_leg_pos[1]);
+        double dthll                = dthb + left_leg_vel[1];
+        double dthlr                = dthb + right_leg_vel[1];
+
+        ds    = ds_filter_.update(ds);
+        dphi  = dphi_filter_.update(dphi);
+        dthll = dthll_filter_.update(dthll);
+        dthlr = dthlr_filter_.update(dthlr);
+        dthb  = dthb_filter_.update(dthb);
+
+
+        if (sub_stage < 3) {
+            ref_pos += ref_vel * kControlDt;
+            ref_phi += ref_omega * kControlDt;
+        }
+        xd[0] = ref_pos;
+        xd[1] = ref_vel;
+        xd[2] = ref_phi;
+        xd[3] = ref_omega;
+
+
+        wheel_kf.update(Eigen::Matrix<double, 1, 1>::Constant(wheel_position), Eigen::Matrix<double, 1, 1>::Constant(ax));
+        Eigen::Vector2d wheel_state = wheel_kf.state();
+
+
+        double wheel_exp_vel = 0.0;
+        if (sub_stage == 0) {
+            ref_height      = 0.37f;
+            stage_time_tick = ms;
+            sub_stage       = 1;
+        } else if (sub_stage == 1)                         // 防止站立过程中的力矩干扰撞墙判断
         {
-            state=exp_state;
+            if (ms - stage_time_tick > 800)
+                sub_stage = 2;
+        } else if (sub_stage == 2)                         // 执行LQR控制，同时检查是否撞墙
+        {
+            debug_log("pitch=%lf", pitch);
+            if (pitch > 0.05) {
+                leg_calc_->forward_kinematics(
+                    Eigen::Vector2d((lf->state.rad + rf->state.rad) * 0.5, (lb->state.rad + rb->state.rad) * 0.5), step_leg_exp_pos);
+                debug_log("switch to stage3,pos=(%lf,%lf)", step_leg_exp_pos[0], step_leg_exp_pos[1]);
+                sub_stage       = 3;
+                stage_time_tick = ms;
+                final_leg_omega=std::max(0.5*(dthll+dthlr),1.0);
+            }
+        } else if (sub_stage == 3)                         // 腿向后伸，轮子向前转
+        {
+            constexpr double k_vel=2.0;
+            wheel_exp_vel       = 10.0;
+            step_leg_exp_pos[0] = 0.4;
+            step_leg_exp_pos[1] += k_vel*final_leg_omega*0.002;
+            if (step_leg_exp_pos[1] > 1.4) {
+                sub_stage = 6;
+                debug_log("switch to stage4");
+                stage_time_tick = ms;
+            }
+        // } else if (sub_stage == 4)                         // 持续前进1s
+        // {
+        //     wheel_exp_vel = 4.0;
+        //     if (ms - stage_time_tick > 1000) {
+        //         debug_log("switch to stage5");
+        //         sub_stage = 5;
+        //     }
+        // } else if (sub_stage == 5)                         // 腿向后转起来
+        // {
+        //     wheel_exp_vel = 0.0;
+        //     step_leg_exp_pos[1] += 0.001;
+        //     if (step_leg_exp_pos[1] > 1.5) {
+        //         sub_stage = 6;
+        //         debug_log("switch to stage6");
+        //     }
+        } else if (sub_stage == 6)                         // 腿转平后，往回缩
+        {
+            step_leg_exp_pos[0] -= 0.0005;
+            if (step_leg_exp_pos[0] < 0.21) {
+                debug_log("switch to stage7");
+                stage_time_tick = ms;
+                sub_stage       = 7;
+            }
+        } else if (sub_stage == 7)                         // 切入准备起立状态
+        {
+            wheel_exp_vel = 2.0;
+            step_leg_exp_pos[1] -= 0.0005;
+            if (step_leg_exp_pos[1] < 0.1) {
+                sub_stage       = 8;
+                stage_time_tick = ms;
+                debug_log("switch to stage8");
+            }
+        } else if (sub_stage == 8) {
+            wheel_exp_vel = 2.0;
+            if (ms - stage_time_tick > 1000)               // 前进1s
+            {
+                sub_stage = 9;
+            }
+        } else if (sub_stage == 9) {
+            wheel_exp_vel = 0.0;
+            if (exp_state == LQR_CTRL)
+                state = LQR_CTRL;
+            finished_step = true;
+        }
+
+
+
+
+        if (sub_stage < 3) {                               // 小于3是执行LQR控制
+            if (std::abs(wheel_state[0] - ref_pos) > 1.5f) // 防止位置误差过大导致控制器发散
+                wheel_state[0] = ref_pos + (wheel_state[0] - ref_pos) / std::abs(wheel_state[0] - ref_pos) * 1.5f;
+
+            x << wheel_state[0], wheel_state[1], phi, dphi, thll, dthll, thlr, dthlr, thb, dthb;
+
+            // 填写参考输入
+
+
+            u = K * (xd - x);
+
+            constexpr double body_width        = 0.34;
+            const double leg_height_roll       = std::atan2(right_leg_pos[0] - left_leg_pos[0], body_width);
+            const double roll_error            = wrap_to_pi(-roll - leg_height_roll);
+            const double leg_length_difference = body_width * std::tan(roll_error);
+            const float left_ref_height =
+                static_cast<float>(std::clamp(static_cast<double>(ref_height) + 0.5 * leg_length_difference, 0.25, 0.4));
+            const float right_ref_height =
+                static_cast<float>(std::clamp(static_cast<double>(ref_height) - 0.5 * leg_length_difference, 0.25, 0.4));
+
+            const double roll_rate     = roll_rate_filter_.update(angular_velocity[0]);
+            const double roll_pd_force = roll_pd.update(roll, roll_rate, 0.0f);
+
+            const double safe_body_width    = std::max(std::abs(BodyWidth), 1.0e-6);
+            const double average_leg_length = 0.5 * (left_leg_pos[0] + right_leg_pos[0]);
+            const double com_height         = average_leg_length + Rw + BaseLinkComHeight;
+
+            // 腿长PD控制器
+            Eigen::Vector2d left_leg_exp_force, right_leg_exp_force, left_joint_torque, right_joint_torque;
+            left_leg_exp_force[1]   = u[2];
+            right_leg_exp_force[1]  = u[3];
+            double left_gravity_ff  = 0.5 * Mb * 9.8 * std::cos(thll);
+            double right_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thlr);
+
+            left_leg_exp_force[0] =
+                left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff + roll_pd_force;
+            right_leg_exp_force[0] =
+                right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff - roll_pd_force;
+            leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
+            leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
+
+            lf->set_command(0.0f, 1.0f, left_joint_torque[0], 0.0f, 0.0f);
+            lb->set_command(0.0f, 1.0f, left_joint_torque[1], 0.0f, 0.0f);
+            rf->set_command(0.0f, 1.0f, right_joint_torque[0], 0.0f, 0.0f);
+            rb->set_command(0.0f, 1.0f, right_joint_torque[1], 0.0f, 0.0f);
+            lw->set_command(0.0f, 0.0f, u[0], 0.0f, 0.0f);
+            rw->set_command(0.0f, 0.0f, u[1], 0.0f, 0.0f);
+        } else {
+            Eigen::Vector2d joint_pos = Eigen::Vector2d(lf->state.rad + rf->state.rad, lb->state.rad + rb->state.rad);
+            leg_calc_->inverse_kinematics(step_leg_exp_pos, joint_pos);
+
+            lf->set_command(joint_pos[0], 0.0f, 0.0, param.motor_kp, param.motor_kd);
+            lb->set_command(joint_pos[1], 0.0f, 0.0, param.motor_kp, param.motor_kd);
+            rf->set_command(joint_pos[0], 0.0f, 0.0, param.motor_kp, param.motor_kd);
+            rb->set_command(joint_pos[1], 0.0f, 0.0, param.motor_kp, param.motor_kd);
+            lw->set_command(0.0f, wheel_exp_vel, 0.0, 0.0f, 0.3f);
+            rw->set_command(0.0f, wheel_exp_vel, 0.0, 0.0f, 0.3f);
+        }
+
+
+
+        if (exp_state == LQR_CTRL) {
+            sub_stage = 0;
+            state     = LQR_CTRL;
         }
     }
     return true;
@@ -500,10 +700,10 @@ bool ControllerAT::update(uint64_t ms) {
 
 
 void ControllerAT::input(float velocity, float omega, float height, int mode) {
-    ref_vel    = velocity;
-    ref_omega  = omega;
+    ref_vel   = velocity;
+    ref_omega = omega;
 
-    if(exp_state==LQR_CTRL)     //LQR行走时可自由控制高度
+    if (exp_state == LQR_CTRL) // LQR行走时可自由控制高度
         ref_height = height;
 
     if (mode == 1) {

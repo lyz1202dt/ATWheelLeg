@@ -106,4 +106,9 @@ private:
 
     int sub_stage{0};
     uint64_t stage_time_tick{0};
+
+    Eigen::Vector2d step_leg_exp_pos;
+    bool finished_step{false};
+    Slope<Eigen::Vector2d> step_traj_slop;
+    double final_leg_omega{0.0};
 };
