@@ -45,6 +45,21 @@ public:
         observer_gain_valid_ = calculate_observer_gain(poles);
     }
 
+    LESO(const A& A, const B& B, const E& E, const C& C, Scalar bandwidth){
+        Ae_.setZero();  //清空
+        Ae_.template block<StateDim,StateDim>(0,0)=A;
+        Ae_.template block<StateDim,DisturbanceDim>(0,StateDim)=E;
+        // 扰动假设为慢变/常值：d_dot = 0。
+
+        Be_.setZero();
+        Be_.template block<StateDim,InputDim>(0,0)=B;
+
+        Ce_.setZero();
+        Ce_.template block<OutputDim,StateDim>(0,0)=C;
+
+        observer_gain_valid_ = calculate_full_state_observer_gain(E, bandwidth);
+    }
+
     void reset(const ExtendedState& x) {
         xe_ = x;
     }
@@ -133,6 +148,47 @@ private:
             return false;
         }
         return true;
+    }
+
+    bool calculate_full_state_observer_gain(const E& disturbance_map, Scalar bandwidth) {
+        if constexpr (OutputDim != StateDim) {
+            (void)disturbance_map;
+            (void)bandwidth;
+            L_.setZero();
+            return false;
+        } else {
+            if (!(bandwidth > Scalar(0)) || !disturbance_map.allFinite()) {
+                L_.setZero();
+                return false;
+            }
+
+            Eigen::FullPivLU<E> disturbance_lu(disturbance_map);
+            if (disturbance_lu.rank() < DisturbanceDim) {
+                L_.setZero();
+                return false;
+            }
+
+            const Eigen::Matrix<Scalar, DisturbanceDim, DisturbanceDim> gram =
+                disturbance_map.transpose() * disturbance_map;
+            Eigen::LDLT<Eigen::Matrix<Scalar, DisturbanceDim, DisturbanceDim>> gram_ldlt(gram);
+            if (gram_ldlt.info() != Eigen::Success) {
+                L_.setZero();
+                return false;
+            }
+
+            const Eigen::Matrix<Scalar, DisturbanceDim, StateDim> disturbance_pinv =
+                gram_ldlt.solve(disturbance_map.transpose());
+            if (!disturbance_pinv.allFinite()) {
+                L_.setZero();
+                return false;
+            }
+
+            L_.setZero();
+            L_.template topRows<StateDim>() =
+                Scalar(2) * bandwidth * Eigen::Matrix<Scalar, StateDim, StateDim>::Identity();
+            L_.template bottomRows<DisturbanceDim>() = bandwidth * bandwidth * disturbance_pinv;
+            return L_.allFinite();
+        }
     }
 
     Ae Ae_;

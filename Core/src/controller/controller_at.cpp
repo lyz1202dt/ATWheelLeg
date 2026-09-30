@@ -4,18 +4,42 @@
 #include <cmath>
 #include <utility>
 
+namespace {
+
+constexpr double kControlDt        = 0.002;
+constexpr double kLqrLesoBandwidth = 30.0;
+
+Eigen::Matrix<double, 10, 10> make_lqr_a_025() {
+    Eigen::Matrix<double, 10, 10> a;
+    a << 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -13.551603629409335, 0.0, -13.551603629409325, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.1433260747833671, 0.0, 2.1433260747834382, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 213.48521396900344, 0.0, -49.865611238637868, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -49.865611238637847, 0.0, 213.48521396900355, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 20.243524724661789, 0.0, 20.243524724661786, 0.0,
+        -28.777479900672802, 0.0;
+    return a;
+}
+
+Eigen::Matrix<double, 10, 4> make_lqr_b_025() {
+    Eigen::Matrix<double, 10, 4> b;
+    b << 0.0, 0.0, 0.0, 0.0, 5.7531064060851165, 5.7531064060851165, -0.93168983906140512, -0.93168983906140523, 0.0, 0.0, 0.0, 0.0,
+        -3.9948561620043392, 3.9948561620043392, -0.14735637052853356, 0.14735637052853545, 0.0, 0.0, 0.0, 0.0, -71.636642386104896,
+        17.645257263241902, 14.677377680462749, -3.4283236567516195, 0.0, 0.0, 0.0, 0.0, 17.645257263241909, -71.636642386104896,
+        -3.4283236567516173, 14.677377680462749, 0.0, 0.0, 0.0, 0.0, -2.9212126457989163, -2.9212126457989163, -5.2899138885268169,
+        -5.289913888526816;
+    return b;
+}
+
+} // namespace
+
 ControllerAT::ControllerAT(
     IMUBase* imu, Motor* lf, Motor* rf, Motor* lb, Motor* rb, Motor* lw, Motor* rw, GainSchedulerFunc func, Param* p_param,
     DebugLogger debug_logger)
     : ControllerBase(imu, lf, rf, lb, rb, lw, rw, std::move(debug_logger))
     , gain_scheduler_func(std::move(func))
     , wheel_kf(
-          (Eigen::Matrix2d() << 1.0, 0.002, 0.0, 1.0).finished(),
-          (Eigen::Matrix<double, 2, 1>() << 0.5 * 0.002 * 0.002,
-                                            0.002)
-              .finished(),
-          (Eigen::Matrix<double, 1, 2>() << 1.0, 0.0).finished(),
-          (Eigen::Matrix2d() << 0.005, 0.0, 0.0, 0.002).finished(),
+          (Eigen::Matrix2d() << 1.0, 0.002, 0.0, 1.0).finished(), (Eigen::Matrix<double, 2, 1>() << 0.5 * 0.002 * 0.002, 0.002).finished(),
+          (Eigen::Matrix<double, 1, 2>() << 1.0, 0.0).finished(), (Eigen::Matrix2d() << 0.005, 0.0, 0.0, 0.002).finished(),
           Eigen::Matrix<double, 1, 1>::Constant(3.0))
     , ds_filter_(0.07)
     , dphi_filter_(0.7)
@@ -33,6 +57,11 @@ ControllerAT::ControllerAT(
     }
     leg_calc_ = std::make_unique<OffsetParallelCalc>(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
     wheel_kf.reset(Eigen::Vector2d::Zero(), Eigen::Matrix2d::Identity() * 10.0);
+
+    const auto lqr_a = make_lqr_a_025();
+    const auto lqr_b = make_lqr_b_025();
+    lqr_disturbance_observer_ =
+        std::make_unique<LqrDisturbanceObserver>(lqr_a, lqr_b, lqr_b, Eigen::Matrix<double, 10, 10>::Identity(), kLqrLesoBandwidth);
 }
 
 double ControllerAT::wrap_to_pi(double angle) {
@@ -61,6 +90,11 @@ bool ControllerAT::extract_ypr(const Eigen::Quaternionf& orientation, double& ya
 bool ControllerAT::update(uint64_t ms) {
     if (state != LQR_CTRL) {
         yaw_tracking_initialized_ = false;
+    }
+    if (state != LQR_CTRL && state != LQR_STEP && state != LQR_JUMP) {
+        lqr_disturbance_observer_initialized_ = false;
+        lqr_disturbance_.setZero();
+        previous_lqr_command_.setZero();
     }
 
     const Eigen::Vector2d left_joint_position(lf->state.rad, lb->state.rad);
@@ -159,7 +193,7 @@ bool ControllerAT::update(uint64_t ms) {
             state = KINAMIC_TEST;
         else if (exp_state == LQR_CTRL)
             state = LQR_CTRL;
-    } else if (state == READY_STAND1) // 到达准备站立状态1
+    } else if (state == READY_STAND1)                                   // 到达准备站立状态1
     {
         Eigen::Vector2d reset_leg_pos(0.1, 0.3);
         Eigen::Vector2d joint_pos;
@@ -177,18 +211,17 @@ bool ControllerAT::update(uint64_t ms) {
         bool ret = right_leg_slope.get_target(joint_pos, duration);
         rf->set_command(joint_pos[0], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
         rb->set_command(joint_pos[1], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
-        if (!ret)                     // 复位完成，切到下一个状态
+        if (!ret)                                                       // 复位完成，切到下一个状态
         {
             reset_traj_generated = false;
-            if(imu->angular_velocity.norm()<0.1)
-            {
-                ref_pos=0.5 * (lw->state.rad + rw->state.rad) * Rw; //重置参考量
-                ref_phi=yaw_unwrapped_ - yaw_reference_;
+            if (imu->angular_velocity.norm() < 0.1) {
+                ref_pos   = 0.5 * (lw->state.rad + rw->state.rad) * Rw; // 重置参考量
+                ref_phi   = yaw_unwrapped_ - yaw_reference_;
                 exp_state = state = LQR_CTRL;
             }
             debug_log("TOUCH_GROUND:%d", state);
         }
-    } else if (state == LQR_CTRL||state == LQR_STEP||state==LQR_JUMP) {
+    } else if (state == LQR_CTRL || state == LQR_STEP || state == LQR_JUMP) {
 
         Eigen::Quaternionf orientation;
         Eigen::Vector3d angular_velocity;
@@ -222,8 +255,8 @@ bool ControllerAT::update(uint64_t ms) {
             yaw_previous_ = yaw;
         }
 
-        //取自然坐标系下的加速度
-        const Eigen::Matrix3d base_link_to_world = orientation.toRotationMatrix().cast<double>();
+        // 取自然坐标系下的加速度
+        const Eigen::Matrix3d base_link_to_world    = orientation.toRotationMatrix().cast<double>();
         const Eigen::Vector3d acceleration_in_world = base_link_to_world * acceleration;
         const Eigen::Vector3d forward_in_world(std::cos(yaw), std::sin(yaw), 0.0);
         const double ax = forward_in_world.dot(acceleration_in_world);
@@ -256,18 +289,18 @@ bool ControllerAT::update(uint64_t ms) {
         //      thb, dthb])
 
         Eigen::Vector<double, 10> x, xd;
-        xd.setZero();                     // 参考输入
+        xd.setZero();                                  // 参考输入
         const double wheel_position = 0.5 * (lw->state.rad + rw->state.rad) * Rw;
         double s                    = wheel_position;
-        double ds         = 0.5 * (lw->state.vel + rw->state.vel) * Rw;
-        const double phi  = yaw_unwrapped_ - yaw_reference_;
-        double dphi       = angular_velocity[2];
-        const double thb  = pitch;
-        double dthb       = angular_velocity[1];
-        const double thll = wrap_to_pi(thb + left_leg_pos[1]);
-        const double thlr = wrap_to_pi(thb + right_leg_pos[1]);
-        double dthll      = dthb + left_leg_vel[1];
-        double dthlr      = dthb + right_leg_vel[1];
+        double ds                   = 0.5 * (lw->state.vel + rw->state.vel) * Rw;
+        const double phi            = yaw_unwrapped_ - yaw_reference_;
+        double dphi                 = angular_velocity[2];
+        const double thb            = pitch;
+        double dthb                 = angular_velocity[1];
+        const double thll           = wrap_to_pi(thb + left_leg_pos[1]);
+        const double thlr           = wrap_to_pi(thb + right_leg_pos[1]);
+        double dthll                = dthb + left_leg_vel[1];
+        double dthlr                = dthb + right_leg_vel[1];
 
         ds    = ds_filter_.update(ds);
         dphi  = dphi_filter_.update(dphi);
@@ -277,9 +310,7 @@ bool ControllerAT::update(uint64_t ms) {
 
 
 
-        wheel_kf.update(
-            Eigen::Matrix<double, 1, 1>::Constant(wheel_position),
-            Eigen::Matrix<double, 1, 1>::Constant(ax));
+        wheel_kf.update(Eigen::Matrix<double, 1, 1>::Constant(wheel_position), Eigen::Matrix<double, 1, 1>::Constant(ax));
         Eigen::Vector2d wheel_state = wheel_kf.state();
 
 
@@ -288,28 +319,45 @@ bool ControllerAT::update(uint64_t ms) {
 
         x << wheel_state[0], wheel_state[1], phi, dphi, thll, dthll, thlr, dthlr, thb, dthb;
 
-        //填写参考输入
-        ref_pos += ref_vel * 0.002f;
-        ref_phi += ref_omega * 0.002f;
+        // 填写参考输入
+        ref_pos += ref_vel * kControlDt;
+        ref_phi += ref_omega * kControlDt;
         xd[0] = ref_pos;
-        xd[1]=ref_vel;
+        xd[1] = ref_vel;
         xd[2] = ref_phi;
-        xd[3]=ref_omega;
+        xd[3] = ref_omega;
 
         // u = sp.Matrix([Twl, Twr, Tbl, Tbr])
-        u = Eigen::Vector4d::Zero(); // LQR控制律
-
-        // 接触状态判断
-        // debug_log("left_force:%lf,right_force:%lf", left_leg_force[0],right_leg_force[0]);
-        debug_log(
-            "left_length:%lf,right_length:%lf,left_force:%lf,right_force:%lf", left_leg_pos[0], right_leg_pos[0], left_leg_force_filtered,
-            right_leg_force_filtered);
+        u = Eigen::Vector4d::Zero();                     // LQR控制律
 
 
         const bool left_in_contact  = left_leg_force_filtered > 25.0;
         const bool right_in_contact = right_leg_force_filtered > 25.0;
 
-        if (left_in_contact && right_in_contact)        // 两轮接地
+        // if (lqr_disturbance_observer_ != nullptr && lqr_disturbance_observer_->observer_gain_valid()) {
+        //     if (!lqr_disturbance_observer_initialized_) {
+        //         lqr_disturbance_observer_->reset(x, Eigen::Vector4d::Zero());
+        //         lqr_disturbance_.setZero();
+        //         previous_lqr_command_.setZero();
+        //         lqr_disturbance_observer_initialized_ = true;
+        //     } else if (!lqr_disturbance_observer_->update(x, previous_lqr_command_, kControlDt, lqr_disturbance_)) {
+        //         lqr_disturbance_observer_->reset(x, Eigen::Vector4d::Zero());
+        //         lqr_disturbance_.setZero();
+        //         previous_lqr_command_.setZero();
+        //         lqr_disturbance_observer_initialized_ = true;
+        //     }
+        // } else {
+        //     lqr_disturbance_.setZero();
+        //     previous_lqr_command_.setZero();
+        //     lqr_disturbance_observer_initialized_ = false;
+        // }
+
+        debug_log(
+            "left_length:%lf,right_length:%lf\nleft_force:%lf,right_force:%lf\n,disturbance_:[%lf,%lf,%lf,%lf]", left_leg_pos[0],
+            right_leg_pos[0], left_leg_force_filtered, right_leg_force_filtered, lqr_disturbance_[0], lqr_disturbance_[1],
+            lqr_disturbance_[2], lqr_disturbance_[3]);
+
+        if (left_in_contact && right_in_contact)         // 两轮接地
         {
             u = K * (xd - x);
         } else if (left_in_contact && !right_in_contact) // 左轮接地
@@ -318,10 +366,16 @@ bool ControllerAT::update(uint64_t ms) {
         } else if (!left_in_contact && right_in_contact) // 右轮接地
         {
             u = K_left_air * (xd - x);
-        } else                                                                        // 左右轮都没有接地
+        } else                                           // 左右轮都没有接地
         {
             u = K_air * (xd - x);
         }
+
+        // u -= lqr_disturbance_;
+        // if (!u.allFinite()) {
+        //     return false;
+        // }
+        previous_lqr_command_ = u;
 
         constexpr double body_width        = 0.34;
         const double leg_height_roll       = std::atan2(right_leg_pos[0] - left_leg_pos[0], body_width);
@@ -333,27 +387,23 @@ bool ControllerAT::update(uint64_t ms) {
             static_cast<float>(std::clamp(static_cast<double>(ref_height) - 0.5 * leg_length_difference, 0.25, 0.4));
 
         const double roll_rate     = roll_rate_filter_.update(angular_velocity[0]);
-        const double roll_pd_force = roll_pd.update(
-            roll, roll_rate, 0.0f);
+        const double roll_pd_force = roll_pd.update(roll, roll_rate, 0.0f);
 
-        const double safe_body_width = std::max(std::abs(BodyWidth), 1.0e-6);
+        const double safe_body_width    = std::max(std::abs(BodyWidth), 1.0e-6);
         const double average_leg_length = 0.5 * (left_leg_pos[0] + right_leg_pos[0]);
-        const double com_height = average_leg_length + Rw + BaseLinkComHeight;
+        const double com_height         = average_leg_length + Rw + BaseLinkComHeight;
         // Use commanded tangential speed and yaw rate for feedforward so IMU
         // and wheel-speed estimation noise does not directly modulate leg force.
-        const double centripetal_force = Mb * wheel_state[1] * imu->angular_velocity.z();
+        const double centripetal_force  = Mb * wheel_state[1] * imu->angular_velocity.z();
         const double centripetal_torque = centripetal_force * com_height;
         const double centrifugal_force_ff_raw =
-            left_in_contact && right_in_contact
-                ? CentrifugalForceFfGain * centripetal_torque / safe_body_width
-                : 0.0;
-        const double centrifugal_force_ff =
-            std::clamp(centrifugal_force_ff_raw, -CentrifugalForceFfLimit, CentrifugalForceFfLimit);
+            left_in_contact && right_in_contact ? CentrifugalForceFfGain * centripetal_torque / safe_body_width : 0.0;
+        const double centrifugal_force_ff = std::clamp(centrifugal_force_ff_raw, -CentrifugalForceFfLimit, CentrifugalForceFfLimit);
 
         // 腿长PD控制器
         Eigen::Vector2d left_leg_exp_force, right_leg_exp_force, left_joint_torque, right_joint_torque;
-        left_leg_exp_force[1]  = u[2];
-        right_leg_exp_force[1] = u[3];
+        left_leg_exp_force[1]   = u[2];
+        right_leg_exp_force[1]  = u[3];
         double left_gravity_ff  = 0.0;
         double right_gravity_ff = 0.0;
         if (left_in_contact && right_in_contact) {
@@ -364,12 +414,10 @@ bool ControllerAT::update(uint64_t ms) {
         } else if (right_in_contact) {
             right_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thlr);
         }
-        left_leg_exp_force[0] =
-            left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff - centrifugal_force_ff
-            + roll_pd_force;
-        right_leg_exp_force[0] =
-            right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff + centrifugal_force_ff
-            - roll_pd_force;
+        left_leg_exp_force[0] = left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff
+                              - centrifugal_force_ff + roll_pd_force;
+        right_leg_exp_force[0] = right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff
+                               + centrifugal_force_ff - roll_pd_force;
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 

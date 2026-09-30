@@ -5,9 +5,9 @@
 #include "controllerbase.hpp"
 #include "tools/estimater.hpp"
 #include "tools/leg_calc.hpp"
+#include "tools/leso.hpp"
 #include "tools/pid.hpp"
 #include "tools/slope.hpp"
-#include "tools/estimater.hpp"
 #include <Eigen/Dense>
 #include <cmath>
 #include <functional>
@@ -64,6 +64,10 @@ public:
     Param param;
     Eigen::Matrix<double,4,10> K,K_left_air,K_right_air,K_air;
 private:
+    using LqrState = Eigen::Matrix<double, 10, 1>;
+    using LqrInput = Eigen::Matrix<double, 4, 1>;
+    using LqrDisturbanceObserver = LESO<double, 10, 4, 10, 4>;
+
     static double wrap_to_pi(double angle);
     static bool extract_ypr(const Eigen::Quaternionf& orientation,
                             double& yaw,
@@ -95,4 +99,8 @@ private:
     double yaw_reference_{0.0};
 
     Eigen::Vector4d u{Eigen::Vector4d::Zero()};
+    std::unique_ptr<LqrDisturbanceObserver> lqr_disturbance_observer_;
+    Eigen::Vector4d lqr_disturbance_{Eigen::Vector4d::Zero()};
+    Eigen::Vector4d previous_lqr_command_{Eigen::Vector4d::Zero()};
+    bool lqr_disturbance_observer_initialized_{false};
 };
