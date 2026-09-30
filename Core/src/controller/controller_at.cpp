@@ -49,8 +49,8 @@ ControllerAT::ControllerAT(
     , roll_rate_filter_(0.7)
     , left_leg_force_filter_(0.3)
     , right_leg_force_filter_(0.3)
-    , left_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
-    , right_leg_length(600.0f, 30.0f, 0.0f, 0.0f, 200.0f, 0.002f)
+    , left_leg_length(600.0f, 100.0f, 0.0f, 0.0f, 200.0f, 0.002f)
+    , right_leg_length(600.0f, 100.0f, 0.0f, 0.0f, 200.0f, 0.002f)
     , roll_pd(500.0f, 200.0f, 0.0f, 0.0f, 80.0f, 0.002f) {
     if (p_param != nullptr) {
         param = *p_param;
@@ -227,33 +227,50 @@ bool ControllerAT::update(uint64_t ms) {
             state = KINAMIC_TEST;
         else if (exp_state == LQR_CTRL)
             state = LQR_CTRL;
-    } else if (state == READY_STAND1)                                   // 到达准备站立状态1
+    } else if (state == READY_STAND) // 到达准备站立状态1
     {
         Eigen::Vector2d reset_leg_pos(0.1, 0.3);
         Eigen::Vector2d joint_pos;
         leg_calc_->inverse_kinematics(reset_leg_pos, joint_pos);
         if (!reset_traj_generated) {
+            sub_stage            = 0;
             reset_traj_generated = true;
-            left_leg_slope.generate_traj(Eigen::Vector2d(lf->state.rad, lb->state.rad), joint_pos, 5.0f);
-            right_leg_slope.generate_traj(Eigen::Vector2d(rf->state.rad, rb->state.rad), joint_pos, 5.0f);
-            time_point = ms;
         }
-        double duration = (ms - time_point) * 0.001;
-        left_leg_slope.get_target(joint_pos, duration);
-        lf->set_command(joint_pos[0], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
-        lb->set_command(joint_pos[1], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
-        bool ret = right_leg_slope.get_target(joint_pos, duration);
-        rf->set_command(joint_pos[0], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
-        rb->set_command(joint_pos[1], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
-        if (!ret)                                                       // 复位完成，切到下一个状态
-        {
-            reset_traj_generated = false;
+
+
+        // TODO:检查机器人是否翻倒，如果翻倒，还需要让腿向前摆一次让机器人大致正过来
+        if (sub_stage == 0) {
+            // TODO:判定机器人大致朝向
+            sub_stage = 5; // 直接进行小板凳起立
+            debug_log("enter stage5");
+
+        }
+        // TODO:中间的是让机器人正过来的步骤
+        else if (sub_stage == 5) {
+            Eigen::Vector2d cur_left_joint_pos  = Eigen::Vector2d(lf->state.rad, lb->state.rad);
+            Eigen::Vector2d cur_right_joint_pos = Eigen::Vector2d(rf->state.rad, rb->state.rad);
+            left_leg_slope.generate_traj(
+                cur_left_joint_pos, joint_pos, std::max((cur_left_joint_pos - joint_pos).norm(), 0.01) / 0.7); // 加速度为0.7rad/s
+            right_leg_slope.generate_traj(cur_right_joint_pos, joint_pos, std::max((cur_right_joint_pos - joint_pos).norm(), 0.01) / 0.7);
+            time_point = ms;
+            sub_stage  = 6;
+        } else if (sub_stage == 6) {
+            double duration = (ms - time_point) * 0.001;
+            left_leg_slope.get_target(joint_pos, duration);
+            lf->set_command(joint_pos[0], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
+            lb->set_command(joint_pos[1], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
+            bool ret = right_leg_slope.get_target(joint_pos, duration);
+            rf->set_command(joint_pos[0], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
+            rb->set_command(joint_pos[1], 0.0f, 0.0f, param.motor_kp, param.motor_kd);
+            if (!ret)                                                                                          // 复位完成，切到下一个状态
+                sub_stage = 7;
+        } else if (sub_stage == 7) {
             if (imu->angular_velocity.norm() < 0.1) {
-                ref_pos   = 0.5 * (lw->state.rad + rw->state.rad) * Rw; // 重置参考量
+                ref_pos   = 0.5 * (lw->state.rad + rw->state.rad) * Rw;                                        // 重置参考量
                 ref_phi   = yaw_unwrapped_ - yaw_reference_;
-                exp_state = state = LQR_CTRL;
+                exp_state = state    = LQR_CTRL;
+                reset_traj_generated = false;
             }
-            debug_log("TOUCH_GROUND:%d", state);
         }
     } else if (state == LQR_CTRL || state == LQR_JUMP) {
         // 取自然坐标系下的加速度
@@ -263,7 +280,7 @@ bool ControllerAT::update(uint64_t ms) {
         const double ax = forward_in_world.dot(acceleration_in_world);
 
         if (std::abs(roll) > 0.35f || std::abs(pitch) > 0.3f) {
-            state = READY_STAND1;
+            state = READY_STAND;
             return true;
         }
 
@@ -516,7 +533,7 @@ bool ControllerAT::update(uint64_t ms) {
         //      thb, dthb])
 
         Eigen::Vector<double, 10> x, xd;
-        xd.setZero();                                      // 参考输入
+        xd.setZero();              // 参考输入
         const double wheel_position = 0.5 * (lw->state.rad + rw->state.rad) * Rw;
         double s                    = wheel_position;
         double ds                   = 0.5 * (lw->state.vel + rw->state.vel) * Rw;
@@ -555,11 +572,11 @@ bool ControllerAT::update(uint64_t ms) {
             ref_height      = 0.37f;
             stage_time_tick = ms;
             sub_stage       = 1;
-        } else if (sub_stage == 1)                         // 防止站立过程中的力矩干扰撞墙判断
+        } else if (sub_stage == 1) // 防止站立过程中的力矩干扰撞墙判断
         {
             if (ms - stage_time_tick > 800)
                 sub_stage = 2;
-        } else if (sub_stage == 2)                         // 执行LQR控制，同时检查是否撞墙
+        } else if (sub_stage == 2) // 执行LQR控制，同时检查是否撞墙
         {
             debug_log("pitch=%lf", pitch);
             if (pitch > 0.05) {
@@ -568,34 +585,34 @@ bool ControllerAT::update(uint64_t ms) {
                 debug_log("switch to stage3,pos=(%lf,%lf)", step_leg_exp_pos[0], step_leg_exp_pos[1]);
                 sub_stage       = 3;
                 stage_time_tick = ms;
-                final_leg_omega=std::max(0.5*(dthll+dthlr),1.0);
+                final_leg_omega = std::max(0.5 * (dthll + dthlr), 1.0);
             }
-        } else if (sub_stage == 3)                         // 腿向后伸，轮子向前转
+        } else if (sub_stage == 3) // 腿向后伸，轮子向前转
         {
-            constexpr double k_vel=2.0;
-            wheel_exp_vel       = 10.0;
-            step_leg_exp_pos[0] = 0.4;
-            step_leg_exp_pos[1] += k_vel*final_leg_omega*0.002;
+            constexpr double k_vel = 2.0;
+            wheel_exp_vel          = 10.0;
+            step_leg_exp_pos[0]    = 0.4;
+            step_leg_exp_pos[1] += k_vel * final_leg_omega * 0.002;
             if (step_leg_exp_pos[1] > 1.4) {
                 sub_stage = 6;
                 debug_log("switch to stage4");
                 stage_time_tick = ms;
             }
-        // } else if (sub_stage == 4)                         // 持续前进1s
-        // {
-        //     wheel_exp_vel = 4.0;
-        //     if (ms - stage_time_tick > 1000) {
-        //         debug_log("switch to stage5");
-        //         sub_stage = 5;
-        //     }
-        // } else if (sub_stage == 5)                         // 腿向后转起来
-        // {
-        //     wheel_exp_vel = 0.0;
-        //     step_leg_exp_pos[1] += 0.001;
-        //     if (step_leg_exp_pos[1] > 1.5) {
-        //         sub_stage = 6;
-        //         debug_log("switch to stage6");
-        //     }
+            // } else if (sub_stage == 4)                         // 持续前进1s
+            // {
+            //     wheel_exp_vel = 4.0;
+            //     if (ms - stage_time_tick > 1000) {
+            //         debug_log("switch to stage5");
+            //         sub_stage = 5;
+            //     }
+            // } else if (sub_stage == 5)                         // 腿向后转起来
+            // {
+            //     wheel_exp_vel = 0.0;
+            //     step_leg_exp_pos[1] += 0.001;
+            //     if (step_leg_exp_pos[1] > 1.5) {
+            //         sub_stage = 6;
+            //         debug_log("switch to stage6");
+            //     }
         } else if (sub_stage == 6)                         // 腿转平后，往回缩
         {
             step_leg_exp_pos[0] -= 0.0005;

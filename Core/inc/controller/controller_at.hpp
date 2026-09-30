@@ -34,8 +34,7 @@ public:
         IDEL,         // 位控处于默认站姿
         KINAMIC_TEST,   //运动学测试
         VMC_TEST,     // 测试VMC功能
-        READY_STAND1,   //斜坡渐变当前期望到准备站立的姿态
-        READY_STAND2,   //完成小板凳形态
+        READY_STAND,   //准备站立姿态
         LQR_CTRL, // 接触地面，LQR平衡控制
         LQR_STEP, // LQR上台阶
         LQR_JUMP  //LQR，跳跃
