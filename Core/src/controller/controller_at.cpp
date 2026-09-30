@@ -328,7 +328,7 @@ bool ControllerAT::update(uint64_t ms) {
         xd[3] = ref_omega;
 
         // u = sp.Matrix([Twl, Twr, Tbl, Tbr])
-        u = Eigen::Vector4d::Zero();                     // LQR控制律
+        u = Eigen::Vector4d::Zero(); // LQR控制律
 
 
         const bool left_in_contact  = left_leg_force_filtered > 25.0;
@@ -377,6 +377,54 @@ bool ControllerAT::update(uint64_t ms) {
         // }
         previous_lqr_command_ = u;
 
+
+        double left_action_ff=0.0,right_action_ff=0.0;
+        if(state==LQR_JUMP)
+        {
+            if(sub_stage==0)    //第一步
+            {
+                stage_time_tick=ms;
+                sub_stage=1;
+                ref_height=0.22f;   //降到最低位置
+            }
+            else if(sub_stage==1)
+            {
+                if(ms-stage_time_tick>500) //等待500ms到达最低位置
+                {
+                    sub_stage=2;
+                }
+            }
+            else if(sub_stage==2)   //开始跳跃，并等待腿长足够长
+            {
+                ref_height=0.4f;
+                left_action_ff=70.0f;
+                right_action_ff=70.0f;
+                if((left_leg_pos[0]+right_leg_pos[0])*0.5>0.4)
+                {
+                    sub_stage=3;
+                }
+            }
+            else if(sub_stage==3)   //收腿
+            {
+                left_action_ff=0.0f;
+                right_action_ff=0.0f;
+                ref_height=0.21f;
+                stage_time_tick=ms;
+                sub_stage=4;
+            }
+            else if(sub_stage==4)
+            {
+                if(ms-stage_time_tick>500) //等待500ms展开腿部准备落地缓冲
+                {
+                    sub_stage=5;
+                }
+            }
+            else if(sub_stage==5)
+            {
+                ref_height=0.25f;
+            }
+        }
+
         constexpr double body_width        = 0.34;
         const double leg_height_roll       = std::atan2(right_leg_pos[0] - left_leg_pos[0], body_width);
         const double roll_error            = wrap_to_pi(-roll - leg_height_roll);
@@ -415,9 +463,9 @@ bool ControllerAT::update(uint64_t ms) {
             right_gravity_ff = 0.5 * Mb * 9.8 * std::cos(thlr);
         }
         left_leg_exp_force[0] = left_leg_length.update(left_leg_pos[0], left_leg_vel[0], left_ref_height) + left_gravity_ff
-                              - centrifugal_force_ff + roll_pd_force;
+                              - centrifugal_force_ff + roll_pd_force+left_action_ff;
         right_leg_exp_force[0] = right_leg_length.update(right_leg_pos[0], right_leg_vel[0], right_ref_height) + right_gravity_ff
-                               + centrifugal_force_ff - roll_pd_force;
+                               + centrifugal_force_ff - roll_pd_force+right_action_ff;
         leg_calc_->inverse_dynamics(left_joint_pos, left_leg_exp_force, left_joint_torque);
         leg_calc_->inverse_dynamics(right_joint_pos, right_leg_exp_force, right_joint_torque);
 
@@ -433,6 +481,19 @@ bool ControllerAT::update(uint64_t ms) {
             state = KINAMIC_TEST;
         else if (exp_state == IDEL)
             state = IDEL;
+        else if(state==LQR_JUMP&&exp_state==LQR_CTRL)   //从跳跃和爬台阶向LQR前进切换
+        {
+            sub_stage=0;
+            state = LQR_CTRL;
+        }else if(state==LQR_STEP&&exp_state==LQR_CTRL)
+        {
+            sub_stage=0;
+            state = LQR_CTRL;
+        }
+        else if(exp_state==LQR_JUMP||exp_state==LQR_STEP)   //从LQR前进向跳跃或爬台阶切换
+        {
+            state=exp_state;
+        }
     }
     return true;
 }
@@ -441,7 +502,9 @@ bool ControllerAT::update(uint64_t ms) {
 void ControllerAT::input(float velocity, float omega, float height, int mode) {
     ref_vel    = velocity;
     ref_omega  = omega;
-    ref_height = height;
+
+    if(exp_state==LQR_CTRL)     //LQR行走时可自由控制高度
+        ref_height = height;
 
     if (mode == 1) {
         exp_state = IDEL;
@@ -451,5 +514,9 @@ void ControllerAT::input(float velocity, float omega, float height, int mode) {
         exp_state = VMC_TEST;
     } else if (mode == 4) {
         exp_state = LQR_CTRL;
+    } else if (mode == 5) {
+        exp_state = LQR_STEP;
+    } else if (mode == 6) {
+        exp_state = LQR_JUMP;
     }
 }

@@ -103,4 +103,7 @@ private:
     Eigen::Vector4d lqr_disturbance_{Eigen::Vector4d::Zero()};
     Eigen::Vector4d previous_lqr_command_{Eigen::Vector4d::Zero()};
     bool lqr_disturbance_observer_initialized_{false};
+
+    int sub_stage{0};
+    uint64_t stage_time_tick{0};
 };
