@@ -333,7 +333,7 @@ bool ControllerAT::update(uint64_t ms) {
 
 
         if (std::abs(wheel_state[0] - ref_pos) > 5.0f) // 防止位置误差过大导致控制器发散
-            wheel_state[0] = ref_pos + (wheel_state[0] - ref_pos) / std::abs(wheel_state[0] - ref_pos) * 5.0f;
+            ref_pos = wheel_state[0] + (ref_pos-wheel_state[0]) / std::abs(wheel_state[0] - ref_pos) * 5.0f;
 
         x << wheel_state[0], wheel_state[1], phi, dphi, thll, dthll, thlr, dthlr, thb, dthb;
 
