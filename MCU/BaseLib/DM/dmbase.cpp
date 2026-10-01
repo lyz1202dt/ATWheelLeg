@@ -1,0 +1,343 @@
+#include "dmbase.hpp"
+
+#include <cstring>
+
+static_assert(sizeof(float) == 4U, "DAMIAO float control frames require 32-bit float");
+
+DMMotorBase::DMMotorBase() : Motor(nullptr) {}
+
+DMMotorBase::DMMotorBase(const DMMotorParam& param) : Motor(nullptr)
+{
+    initialize(param);
+}
+
+DMMotorBase::DMMotorBase(bsp::FdcanBus& bus, const DMMotorParam& param) : Motor(nullptr)
+{
+    DMMotorParam bus_param = param;
+    bus_param.bus = &bus;
+    initialize(bus_param);
+}
+
+void DMMotorBase::initialize(const DMMotorParam& param)
+{
+    if (param.bus == nullptr || param.reduction_ratio == 0.0F || param.position_limit <= 0.0F
+        || param.velocity_limit <= 0.0F || param.torque_limit <= 0.0F) {
+        return;
+    }
+
+    bus_ = param.bus;
+    tx_id_ = param.tx_id;
+    rx_id_ = param.rx_id;
+
+    position_limit_ = param.position_limit;
+    velocity_limit_ = param.velocity_limit;
+    torque_limit_ = param.torque_limit;
+
+    zero_angle_offset_ = param.zero_angle_offset;
+    reduction_ratio_ = param.reduction_ratio;
+
+    has_state_ = false;
+    continuous_position_ready_ = false;
+    state_ = {};
+    update_joint_state();
+
+    if (param.auto_register_feedback) {
+        register_feedback_callback();
+    }
+}
+
+bool DMMotorBase::init()
+{
+    return bus_ != nullptr && reduction_ratio_ != 0.0F && position_limit_ > 0.0F
+           && velocity_limit_ > 0.0F && torque_limit_ > 0.0F;
+}
+
+bool DMMotorBase::enable()
+{
+    return send_special_command(0xFCU);
+}
+
+bool DMMotorBase::disable()
+{
+    return send_special_command(0xFDU);
+}
+
+int DMMotorBase::has_error()
+{
+    if (!has_state_) {
+        return 0;
+    }
+
+    return state_.error;
+}
+
+bool DMMotorBase::clear_error(int)
+{
+    return send_special_command(0xFBU);
+}
+
+bool DMMotorBase::read_state()
+{
+    return has_state_;
+}
+
+bool DMMotorBase::set_command(float pos, float vel, float torque, float kp, float kd)
+{
+    return mit_control(pos, vel, torque, kp, kd);
+}
+
+void DMMotorBase::set_offset(float offset)
+{
+    zero_angle_offset_ = offset;
+    update_joint_state();
+}
+
+void DMMotorBase::set_ratio(float ratio)
+{
+    if (ratio == 0.0F) {
+        return;
+    }
+
+    reduction_ratio_ = ratio;
+    update_joint_state();
+}
+
+void DMMotorBase::reset_continuous_position()
+{
+    state_.motor_continuous_position = state_.motor_position;
+    last_motor_position_ = state_.motor_position;
+    continuous_position_ready_ = has_state_;
+    update_joint_state();
+}
+
+bool DMMotorBase::mit_control(float joint_pos, float joint_vel, float joint_torque, float joint_kp, float joint_kd)
+{
+    const float motor_pos = joint_to_motor_position(joint_pos);
+    const float motor_vel = joint_to_motor_velocity(joint_vel);
+    const float motor_torque = joint_to_motor_torque(joint_torque);
+    const float ratio_squared = reduction_ratio_ * reduction_ratio_;
+    const float motor_kp = joint_kp / ratio_squared;
+    const float motor_kd = joint_kd / ratio_squared;
+
+    return mit_control_raw(motor_pos, motor_vel, motor_torque, motor_kp, motor_kd);
+}
+
+bool DMMotorBase::mit_control_raw(float motor_pos, float motor_vel, float motor_torque, float kp, float kd)
+{
+    const uint32_t pos_tmp = float_to_uint(motor_pos, -position_limit_, position_limit_, 16U);
+    const uint32_t vel_tmp = float_to_uint(motor_vel, -velocity_limit_, velocity_limit_, 12U);
+    const uint32_t torque_tmp = float_to_uint(motor_torque, -torque_limit_, torque_limit_, 12U);
+    const uint32_t kp_tmp = float_to_uint(kp, 0.0F, kMitKpLimit, 12U);
+    const uint32_t kd_tmp = float_to_uint(kd, 0.0F, kMitKdLimit, 12U);
+
+    uint8_t data[kCommandLength] = {};
+    data[0] = static_cast<uint8_t>(pos_tmp >> 8U);
+    data[1] = static_cast<uint8_t>(pos_tmp);
+    data[2] = static_cast<uint8_t>(vel_tmp >> 4U);
+    data[3] = static_cast<uint8_t>(((vel_tmp & 0x0FU) << 4U) | (kp_tmp >> 8U));
+    data[4] = static_cast<uint8_t>(kp_tmp);
+    data[5] = static_cast<uint8_t>(kd_tmp >> 4U);
+    data[6] = static_cast<uint8_t>(((kd_tmp & 0x0FU) << 4U) | (torque_tmp >> 8U));
+    data[7] = static_cast<uint8_t>(torque_tmp);
+
+    return send(tx_id_, data, kCommandLength);
+}
+
+bool DMMotorBase::position_velocity_control(float joint_pos, float joint_vel)
+{
+    uint8_t data[kCommandLength] = {};
+    pack_float_le(joint_to_motor_position(joint_pos), &data[0]);
+    pack_float_le(joint_to_motor_velocity(joint_vel), &data[4]);
+
+    return send(tx_id_ + kPositionVelocityIdOffset, data, kCommandLength);
+}
+
+bool DMMotorBase::velocity_control(float joint_vel)
+{
+    uint8_t data[kVelocityCommandLength] = {};
+    pack_float_le(joint_to_motor_velocity(joint_vel), data);
+
+    return send(tx_id_ + kVelocityIdOffset, data, kVelocityCommandLength);
+}
+
+bool DMMotorBase::handle_feedback(const bsp::FdcanBus::Frame& frame)
+{
+    const uint8_t length = bsp::FdcanBus::dlcToLength(frame.data_length);
+    if (length < kFeedbackLength || frame.id != rx_id_) {
+        return false;
+    }
+
+    const uint8_t feedback_id = frame.data[0] & kFeedbackIdMask;
+    if (feedback_id != (tx_id_ & kFeedbackIdMask)) {
+        return false;
+    }
+
+    const uint32_t pos_tmp =
+        (static_cast<uint32_t>(frame.data[1]) << 8U) | static_cast<uint32_t>(frame.data[2]);
+    const uint32_t vel_tmp =
+        (static_cast<uint32_t>(frame.data[3]) << 4U) | (static_cast<uint32_t>(frame.data[4]) >> 4U);
+    const uint32_t torque_tmp =
+        ((static_cast<uint32_t>(frame.data[4]) & 0x0FU) << 8U) | static_cast<uint32_t>(frame.data[5]);
+
+    state_.id = feedback_id;
+    state_.error = frame.data[0] >> 4U;
+    state_.motor_position = uint_to_float(pos_tmp, -position_limit_, position_limit_, 16U);
+    state_.motor_velocity = uint_to_float(vel_tmp, -velocity_limit_, velocity_limit_, 12U);
+    state_.motor_torque = uint_to_float(torque_tmp, -torque_limit_, torque_limit_, 12U);
+    state_.mos_temperature = static_cast<float>(frame.data[6]);
+    state_.rotor_temperature = static_cast<float>(frame.data[7]);
+
+    update_continuous_position(state_.motor_position);
+    update_joint_state();
+    has_state_ = true;
+    return true;
+}
+
+const DMMotorState& DMMotorBase::dm_state() const
+{
+    return state_;
+}
+
+float DMMotorBase::motor_to_joint_position(float motor_position) const
+{
+    return (motor_position - zero_angle_offset_) / reduction_ratio_;
+}
+
+float DMMotorBase::motor_to_joint_velocity(float motor_velocity) const
+{
+    return motor_velocity / reduction_ratio_;
+}
+
+float DMMotorBase::motor_to_joint_torque(float motor_torque) const
+{
+    return motor_torque * reduction_ratio_;
+}
+
+float DMMotorBase::joint_to_motor_position(float joint_position) const
+{
+    return joint_position * reduction_ratio_ + zero_angle_offset_;
+}
+
+float DMMotorBase::joint_to_motor_velocity(float joint_velocity) const
+{
+    return joint_velocity * reduction_ratio_;
+}
+
+float DMMotorBase::joint_to_motor_torque(float joint_torque) const
+{
+    return joint_torque / reduction_ratio_;
+}
+
+float DMMotorBase::clamp(float value, float min_value, float max_value)
+{
+    if (value != value) {
+        return 0.0F;
+    }
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+uint32_t DMMotorBase::float_to_uint(float value, float min_value, float max_value, uint8_t bits)
+{
+    const float clamped = clamp(value, min_value, max_value);
+    const float span = max_value - min_value;
+    const uint32_t scale = (1UL << bits) - 1UL;
+    return static_cast<uint32_t>((clamped - min_value) * static_cast<float>(scale) / span);
+}
+
+float DMMotorBase::uint_to_float(uint32_t value, float min_value, float max_value, uint8_t bits)
+{
+    const float span = max_value - min_value;
+    const uint32_t scale = (1UL << bits) - 1UL;
+    return static_cast<float>(value) * span / static_cast<float>(scale) + min_value;
+}
+
+void DMMotorBase::pack_float_le(float value, uint8_t* data)
+{
+    uint32_t raw = 0U;
+    std::memcpy(&raw, &value, sizeof(raw));
+    data[0] = static_cast<uint8_t>(raw);
+    data[1] = static_cast<uint8_t>(raw >> 8U);
+    data[2] = static_cast<uint8_t>(raw >> 16U);
+    data[3] = static_cast<uint8_t>(raw >> 24U);
+}
+
+bool DMMotorBase::send(uint32_t id, const uint8_t* data, uint8_t length)
+{
+    if (bus_ == nullptr) {
+        return false;
+    }
+
+    return bus_->transmit(id, data, length) == HAL_OK;
+}
+
+bool DMMotorBase::send_special_command(uint8_t command)
+{
+    uint8_t data[kCommandLength] = {};
+    for (uint8_t i = 0U; i < kCommandLength - 1U; ++i) {
+        data[i] = 0xFFU;
+    }
+    data[7] = command;
+    return send(tx_id_, data, kCommandLength);
+}
+
+bool DMMotorBase::register_feedback_callback()
+{
+    if (bus_ == nullptr) {
+        return false;
+    }
+    if (feedback_callback_registered_) {
+        return true;
+    }
+
+    const HAL_StatusTypeDef status =
+        bus_->register_recv_cb([this](const bsp::FdcanBus::Frame& frame) {
+            handle_feedback(frame);
+        });
+    feedback_callback_registered_ = (status == HAL_OK);
+    return feedback_callback_registered_;
+}
+
+void DMMotorBase::update_continuous_position(float motor_position)
+{
+    const float period = position_limit_ * 2.0F;
+    if (!continuous_position_ready_ || period <= 0.0F) {
+        state_.motor_continuous_position = motor_position;
+        last_motor_position_ = motor_position;
+        continuous_position_ready_ = true;
+        return;
+    }
+
+    float delta = motor_position - last_motor_position_;
+    if (delta > position_limit_) {
+        delta -= period;
+    } else if (delta < -position_limit_) {
+        delta += period;
+    }
+
+    state_.motor_continuous_position += delta;
+    last_motor_position_ = motor_position;
+}
+
+void DMMotorBase::update_joint_state()
+{
+    if (reduction_ratio_ == 0.0F) {
+        return;
+    }
+
+    state_.joint_position = motor_to_joint_position(state_.motor_position);
+    state_.joint_continuous_position = motor_to_joint_position(state_.motor_continuous_position);
+    state_.joint_velocity = motor_to_joint_velocity(state_.motor_velocity);
+    state_.joint_torque = motor_to_joint_torque(state_.motor_torque);
+
+    state.r = 0;
+    state.rad = state_.joint_position;
+    state.continue_rad = state_.joint_continuous_position;
+    state.vel = state_.joint_velocity;
+    state.toqeue = state_.joint_torque;
+}
