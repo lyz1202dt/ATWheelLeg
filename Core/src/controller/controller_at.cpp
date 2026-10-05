@@ -1,8 +1,10 @@
 #include "controller/controller_at.hpp"
+#include <Eigen/Cholesky>
 #include <Eigen/src/Core/DiagonalMatrix.h>
 #include <Eigen/src/Core/Matrix.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -11,11 +13,24 @@ constexpr double kControlDt        = 0.002;
 constexpr double kLqrLesoBandwidth = 30.0;
 constexpr double kGravity          = 9.80665;
 constexpr double kBodyKfNominalLegLength = 0.25;
-constexpr double kBodyKfSVariance        = 50.0;
+constexpr double kBodyKfSVariance        = 1.0;
+constexpr double kBodyKfDsVariance       = 1.0;
 constexpr double kBodyKfPhiVariance      = 1e-4;
 constexpr double kBodyKfLegAngleVariance = 1e-4;
 constexpr double kBodyKfBodyAngleVariance = 1e-5;
 constexpr double kBodyKfAccelVariance     = 25.0;
+constexpr double kBodyKfWheelOfflineVariance = 1.0e12;
+constexpr double kBodyKfWheelElevatedVariance = 30.0;
+constexpr double kWheelSensorGateSVariance   = 0.25;
+constexpr double kWheelSensorGateDsVariance  = 2.25;
+constexpr double kWheelSensorRejectMahalanobisSq = 13.82; // chi-square 2D, about 99.9%
+constexpr double kWheelSensorRecoverMahalanobisSq = 5.99; // chi-square 2D, about 95%
+constexpr double kWheelSensorConfidenceDecay      = 0.04;
+constexpr double kWheelSensorConfidenceRecover    = 0.01;
+constexpr double kWheelSensorOfflineConfidence    = 0.2;
+constexpr double kWheelSensorOnlineConfidence     = 0.8;
+constexpr double kWheelSensorVarianceElevateMahalanobisSq = 0.1;
+constexpr double kWheelSensorVarianceRestoreMahalanobisSq = 0.07;
 
 using BodyKf = kf::KalmanFilter<10, 4, 11>;
 
@@ -57,7 +72,7 @@ Eigen::Matrix<double, 10, 10> make_body_kf_q() {
 Eigen::Matrix<double, 11, 11> make_body_kf_r() {
     Eigen::Matrix<double, 11, 1> r;
     r << kBodyKfSVariance, // s
-        50.0,  // ds, low-pass wheel velocity
+        kBodyKfDsVariance,  // ds, low-pass wheel velocity
         kBodyKfPhiVariance,  // phi
         2e-2,  // dphi, low-pass yaw rate
         kBodyKfLegAngleVariance,  // thll
@@ -100,6 +115,86 @@ void update_body_accel_observation(BodyKf& body_kf, double left_leg_length, doub
     body_kf.H.row(10) = make_body_accel_h(body_kf.A, left_leg_length, right_leg_length);
 }
 
+double body_kf_wheel_s_variance(bool elevated) {
+    return elevated ? kBodyKfWheelElevatedVariance : kBodyKfSVariance;
+}
+
+double body_kf_wheel_ds_variance(bool elevated) {
+    return elevated ? kBodyKfWheelElevatedVariance : kBodyKfDsVariance;
+}
+
+void set_body_kf_wheel_observation_enabled(BodyKf& body_kf, bool enabled, bool variance_elevated) {
+    body_kf.H.row(0).setZero();
+    body_kf.H.row(1).setZero();
+    body_kf.H(0, 0) = enabled ? 1.0 : 0.0;
+    body_kf.H(1, 1) = enabled ? 1.0 : 0.0;
+    body_kf.R(0, 0) = enabled ? body_kf_wheel_s_variance(variance_elevated) : kBodyKfWheelOfflineVariance;
+    body_kf.R(1, 1) = enabled ? body_kf_wheel_ds_variance(variance_elevated) : kBodyKfWheelOfflineVariance;
+}
+
+double wheel_sensor_mahalanobis_sq(
+    const BodyKf& body_kf, const BodyKf::ControlVec& body_kf_u, double s, double ds) {
+    if (!std::isfinite(s) || !std::isfinite(ds)) {
+        return std::numeric_limits<double>::infinity();
+    }
+
+    const BodyKf::StateMat Ad = BodyKf::StateMat::Identity() + body_kf.A * kControlDt;
+    const BodyKf::ControlMat Bd = body_kf.B * kControlDt;
+    const BodyKf::ProcessNoiseMat Qd = body_kf.Q * kControlDt;
+    const BodyKf::StateVec predicted_state = Ad * body_kf.state() + Bd * body_kf_u;
+    const BodyKf::CovMat predicted_covariance =
+        Ad * body_kf.covariance() * Ad.transpose() + Qd;
+
+    Eigen::Vector2d innovation;
+    innovation << s - predicted_state[0], ds - predicted_state[1];
+
+    Eigen::Matrix2d innovation_covariance = predicted_covariance.block<2, 2>(0, 0);
+    innovation_covariance(0, 0) += kWheelSensorGateSVariance;
+    innovation_covariance(1, 1) += kWheelSensorGateDsVariance;
+
+    if (!innovation.allFinite() || !innovation_covariance.allFinite()) {
+        return std::numeric_limits<double>::infinity();
+    }
+
+    Eigen::LDLT<Eigen::Matrix2d> ldlt(innovation_covariance);
+    if (ldlt.info() != Eigen::Success) {
+        return std::numeric_limits<double>::infinity();
+    }
+
+    const Eigen::Vector2d normalized_innovation = ldlt.solve(innovation);
+    if (!normalized_innovation.allFinite()) {
+        return std::numeric_limits<double>::infinity();
+    }
+
+    return std::max(0.0, innovation.dot(normalized_innovation));
+}
+
+void update_wheel_sensor_confidence(
+    bool sample_valid, double mahalanobis_sq, double& confidence, bool& online) {
+    if (!sample_valid || !std::isfinite(mahalanobis_sq)) {
+        confidence = 0.0;
+    } else if (mahalanobis_sq > kWheelSensorRejectMahalanobisSq) {
+        confidence = std::max(0.0, confidence - kWheelSensorConfidenceDecay);
+    } else if (mahalanobis_sq < kWheelSensorRecoverMahalanobisSq) {
+        confidence = std::min(1.0, confidence + kWheelSensorConfidenceRecover);
+    }
+
+    if (online && confidence <= kWheelSensorOfflineConfidence) {
+        online = false;
+    } else if (!online && sample_valid && mahalanobis_sq < kWheelSensorRecoverMahalanobisSq
+               && confidence >= kWheelSensorOnlineConfidence) {
+        online = true;
+    }
+}
+
+void update_wheel_sensor_variance_elevation(double mahalanobis_sq, bool& elevated) {
+    if (!elevated && mahalanobis_sq > kWheelSensorVarianceElevateMahalanobisSq) {
+        elevated = true;
+    } else if (elevated && mahalanobis_sq < kWheelSensorVarianceRestoreMahalanobisSq) {
+        elevated = false;
+    }
+}
+
 double forward_linear_acceleration(
     const Eigen::Quaternionf& orientation, const Eigen::Vector3d& acceleration, double yaw) {
     const Eigen::Matrix3d base_link_to_world = orientation.toRotationMatrix().cast<double>();
@@ -129,9 +224,11 @@ BodyKf::ControlVec make_body_kf_input_from_motor_torque(
 }
 
 BodyKf::StateVec make_body_control_state(
-    const BodyKf& body_kf, double s, double phi, double thll, double thlr, double thb) {
+    const BodyKf& body_kf, double s, double phi, double thll, double thlr, double thb, bool anchor_s) {
     BodyKf::StateVec state = body_kf.state();
-    state[0] = s;
+    if (anchor_s) {
+        state[0] = s;
+    }
     state[2] = phi;
     state[4] = thll;
     state[6] = thlr;
@@ -140,16 +237,19 @@ BodyKf::StateVec make_body_control_state(
 }
 
 void anchor_body_kf_direct_positions(
-    BodyKf& body_kf, BodyKf::StateVec& state, double s, double phi, double thll, double thlr, double thb) {
+    BodyKf& body_kf, BodyKf::StateVec& state, double s, double phi, double thll, double thlr, double thb, bool anchor_s,
+    bool wheel_variance_elevated) {
     auto covariance = body_kf.covariance();
-    state = make_body_control_state(body_kf, s, phi, thll, thlr, thb);
+    state = make_body_control_state(body_kf, s, phi, thll, thlr, thb, anchor_s);
 
     const auto anchor = [&covariance](const Eigen::Index index, const double variance) {
         covariance.row(index).setZero();
         covariance.col(index).setZero();
         covariance(index, index) = variance;
     };
-    anchor(0, kBodyKfSVariance);
+    if (anchor_s) {
+        anchor(0, body_kf_wheel_s_variance(wheel_variance_elevated));
+    }
     anchor(2, kBodyKfPhiVariance);
     anchor(4, kBodyKfLegAngleVariance);
     anchor(6, kBodyKfLegAngleVariance);
@@ -267,6 +367,10 @@ bool ControllerAT::update(uint64_t ms) {
         lqr_disturbance_observer_initialized_ = false;
         lqr_disturbance_.setZero();
         body_kf_initialized_ = false;
+        wheel_sensor_confidence_ = 1.0;
+        wheel_sensor_mahalanobis_sq_ = 0.0;
+        wheel_sensor_online_ = true;
+        wheel_sensor_variance_elevated_ = false;
         previous_lqr_command_.setZero();
     }
 
@@ -447,8 +551,10 @@ bool ControllerAT::update(uint64_t ms) {
         Eigen::Vector<double, 10> x, xd;
         xd.setZero();                                  // 参考输入
         const double wheel_position = 0.5 * (lw->state.rad + rw->state.rad) * Rw;
-        double s                    = wheel_position;
-        double ds                   = 0.5 * (lw->state.vel + rw->state.vel) * Rw;
+        const double wheel_velocity = 0.5 * (lw->state.vel + rw->state.vel) * Rw;
+        const bool wheel_sample_valid = std::isfinite(wheel_position) && std::isfinite(wheel_velocity);
+        double s                    = wheel_sample_valid ? wheel_position : body_kf.state()[0];
+        double ds                   = wheel_sample_valid ? wheel_velocity : body_kf.state()[1];
         const double phi            = yaw_unwrapped_ - yaw_reference_;
         double dphi                 = angular_velocity[2];
         const double thb            = pitch;
@@ -458,38 +564,68 @@ bool ControllerAT::update(uint64_t ms) {
         double dthll                = dthb + left_leg_vel[1];
         double dthlr                = dthb + right_leg_vel[1];
 
-        ds    = ds_filter_.update(ds);
+        if (wheel_sample_valid) {
+            ds = ds_filter_.update(ds);
+        }
         dphi  = dphi_filter_.update(dphi);
         dthll = dthll_filter_.update(dthll);
         dthlr = dthlr_filter_.update(dthlr);
         dthb  = dthb_filter_.update(dthb);
 
+        update_body_accel_observation(body_kf, left_leg_pos[0], right_leg_pos[0]);
+        const BodyKf::MeasControlMat body_kf_d = make_body_kf_d(body_kf, left_leg_pos[0], right_leg_pos[0]);
+        const BodyKf::ControlVec body_kf_u =
+            make_body_kf_input_from_motor_torque(lw->state.toqeue, rw->state.toqeue, left_leg_force, right_leg_force);
 
+        if (!body_kf_initialized_) {
+            body_kf.reset(make_body_kf_state(s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb), make_body_kf_p0());
+            body_kf_initialized_ = true;
+            wheel_sensor_confidence_ = wheel_sample_valid ? 1.0 : 0.0;
+            wheel_sensor_online_ = wheel_sample_valid;
+        }
 
-        wheel_kf.update(Eigen::Matrix<double, 1, 1>::Constant(wheel_position), Eigen::Matrix<double, 1, 1>::Constant(ax));
+        wheel_sensor_mahalanobis_sq_ =
+            wheel_sample_valid ? wheel_sensor_mahalanobis_sq(body_kf, body_kf_u, s, ds)
+                               : std::numeric_limits<double>::infinity();
+        const bool wheel_sensor_was_online = wheel_sensor_online_;
+        update_wheel_sensor_confidence(
+            wheel_sample_valid, wheel_sensor_mahalanobis_sq_, wheel_sensor_confidence_, wheel_sensor_online_);
+        update_wheel_sensor_variance_elevation(wheel_sensor_mahalanobis_sq_, wheel_sensor_variance_elevated_);
+        if (!wheel_sensor_was_online && wheel_sensor_online_ && wheel_sample_valid) {
+            ds_filter_.reset(wheel_velocity);
+            ds = wheel_velocity;
+        }
+
+        const bool use_wheel_sensor = wheel_sample_valid && wheel_sensor_online_;
+        if (use_wheel_sensor) {
+            wheel_kf.update(Eigen::Matrix<double, 1, 1>::Constant(wheel_position), Eigen::Matrix<double, 1, 1>::Constant(ax));
+        } else {
+            wheel_kf.predict(Eigen::Matrix<double, 1, 1>::Constant(ax));
+        }
         Eigen::Vector2d wheel_state= wheel_kf.state();
 
 
         if (std::abs(wheel_state[0] - ref_pos) > 5.0f) // 防止位置误差过大导致控制器发散
             ref_pos = wheel_state[0] + (ref_pos-wheel_state[0]) / std::abs(wheel_state[0] - ref_pos) * 5.0f;
 
-        update_body_accel_observation(body_kf, left_leg_pos[0], right_leg_pos[0]);
-        const BodyKf::MeasControlMat body_kf_d = make_body_kf_d(body_kf, left_leg_pos[0], right_leg_pos[0]);
-        const BodyKf::ControlVec body_kf_u =
-            make_body_kf_input_from_motor_torque(lw->state.toqeue, rw->state.toqeue, left_leg_force, right_leg_force);
+        set_body_kf_wheel_observation_enabled(body_kf, use_wheel_sensor, wheel_sensor_variance_elevated_);
         BodyKf::MeasVec body_kf_y;
         body_kf_y << s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb, ax;
-        if (!body_kf_initialized_) {
-            body_kf.reset(make_body_kf_state(s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb), make_body_kf_p0());
-            body_kf_initialized_ = true;
-        }
         body_kf.update(body_kf_y, body_kf_u, kControlDt, body_kf_d);
-        anchor_body_kf_direct_positions(body_kf, x, s, phi, thll, thlr, thb);
+        anchor_body_kf_direct_positions(body_kf, x, s, phi, thll, thlr, thb, use_wheel_sensor, wheel_sensor_variance_elevated_);
 
-        debug_log(
+        if(!wheel_sensor_online_)
+        {
+            debug_log(
             "x:[%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf]",x[0],x[1],x[2],x[3],x[4],x[5],x[6],x[7],x[8],x[9]);
         debug_log(
             "raw:[%lf,%lf,%lf,%lf,%lf] rawvel:[%lf,%lf,%lf,%lf,%lf]", s, phi, thll, thlr, thb, ds, dphi, dthll, dthlr, dthb);
+        }
+
+        debug_log(
+            "wheel_gate:use=%d online=%d conf=%lf md2=%lf var=%lf raw_s=%lf raw_ds=%lf",
+            use_wheel_sensor ? 1 : 0, wheel_sensor_online_ ? 1 : 0, wheel_sensor_confidence_,
+            wheel_sensor_mahalanobis_sq_, body_kf_wheel_s_variance(wheel_sensor_variance_elevated_), wheel_position, wheel_velocity);
 
         // 填写参考输入
         ref_pos += ref_vel * kControlDt;
@@ -502,18 +638,18 @@ bool ControllerAT::update(uint64_t ms) {
         // u = sp.Matrix([Twl, Twr, Tbl, Tbr])
         u = Eigen::Vector4d::Zero(); // LQR控制律
 
-        const auto kfx = body_kf.state();
-const auto f = body_kf.A * kfx + body_kf.B * body_kf_u;
-const double ax_hat =
-    (body_kf.H.row(10) * kfx)(0) + (body_kf_d.row(10) * body_kf_u)(0);
+//         const auto kfx = body_kf.state();
+// const auto f = body_kf.A * kfx + body_kf.B * body_kf_u;
+// const double ax_hat =
+//     (body_kf.H.row(10) * kfx)(0) + (body_kf_d.row(10) * body_kf_u)(0);
 
-debug_log(
-    "kfpos:[%lf,%lf,%lf,%lf,%lf] kfvel:[%lf,%lf,%lf,%lf,%lf] ax:%lf ax_hat:%lf ax_err:%lf fveldot:[%lf,%lf,%lf,%lf,%lf] u:[%lf,%lf,%lf,%lf]",
-    kfx[0], kfx[2], kfx[4], kfx[6], kfx[8],
-    kfx[1], kfx[3], kfx[5], kfx[7], kfx[9],
-    ax, ax_hat, ax - ax_hat,
-    f[1], f[3], f[5], f[7], f[9],
-    body_kf_u[0], body_kf_u[1], body_kf_u[2], body_kf_u[3]);
+// debug_log(
+//     "kfpos:[%lf,%lf,%lf,%lf,%lf] kfvel:[%lf,%lf,%lf,%lf,%lf] ax:%lf ax_hat:%lf ax_err:%lf fveldot:[%lf,%lf,%lf,%lf,%lf] u:[%lf,%lf,%lf,%lf]",
+//     kfx[0], kfx[2], kfx[4], kfx[6], kfx[8],
+//     kfx[1], kfx[3], kfx[5], kfx[7], kfx[9],
+//     ax, ax_hat, ax - ax_hat,
+//     f[1], f[3], f[5], f[7], f[9],
+//     body_kf_u[0], body_kf_u[1], body_kf_u[2], body_kf_u[3]);
 
 
 
@@ -702,8 +838,10 @@ debug_log(
         Eigen::Vector<double, 10> x, xd;
         xd.setZero();              // 参考输入
         const double wheel_position = 0.5 * (lw->state.rad + rw->state.rad) * Rw;
-        double s                    = wheel_position;
-        double ds                   = 0.5 * (lw->state.vel + rw->state.vel) * Rw;
+        const double wheel_velocity = 0.5 * (lw->state.vel + rw->state.vel) * Rw;
+        const bool wheel_sample_valid = std::isfinite(wheel_position) && std::isfinite(wheel_velocity);
+        double s                    = wheel_sample_valid ? wheel_position : body_kf.state()[0];
+        double ds                   = wheel_sample_valid ? wheel_velocity : body_kf.state()[1];
         const double phi            = yaw_unwrapped_ - yaw_reference_;
         double dphi                 = angular_velocity[2];
         const double thb            = pitch;
@@ -713,7 +851,9 @@ debug_log(
         double dthll                = dthb + left_leg_vel[1];
         double dthlr                = dthb + right_leg_vel[1];
 
-        ds    = ds_filter_.update(ds);
+        if (wheel_sample_valid) {
+            ds = ds_filter_.update(ds);
+        }
         dphi  = dphi_filter_.update(dphi);
         dthll = dthll_filter_.update(dthll);
         dthlr = dthlr_filter_.update(dthlr);
@@ -728,10 +868,6 @@ debug_log(
         xd[1] = ref_vel;
         xd[2] = ref_phi;
         xd[3] = ref_omega;
-
-
-        wheel_kf.update(Eigen::Matrix<double, 1, 1>::Constant(wheel_position), Eigen::Matrix<double, 1, 1>::Constant(ax));
-        Eigen::Vector2d wheel_state = wheel_kf.state();
 
 
         double wheel_exp_vel = 0.0;
@@ -814,21 +950,51 @@ debug_log(
 
 
         if (sub_stage < 3) {                               // 小于3是执行LQR控制
-            if (std::abs(wheel_state[0] - ref_pos) > 1.5f) // 防止位置误差过大导致控制器发散
-                wheel_state[0] = ref_pos + (wheel_state[0] - ref_pos) / std::abs(wheel_state[0] - ref_pos) * 1.5f;
-
             update_body_accel_observation(body_kf, left_leg_pos[0], right_leg_pos[0]);
             const BodyKf::MeasControlMat body_kf_d = make_body_kf_d(body_kf, left_leg_pos[0], right_leg_pos[0]);
             const BodyKf::ControlVec body_kf_u =
                 make_body_kf_input_from_motor_torque(lw->state.toqeue, rw->state.toqeue, left_leg_force, right_leg_force);
-            BodyKf::MeasVec body_kf_y;
-            body_kf_y << s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb, ax;
+
             if (!body_kf_initialized_) {
                 body_kf.reset(make_body_kf_state(s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb), make_body_kf_p0());
                 body_kf_initialized_ = true;
+                wheel_sensor_confidence_ = wheel_sample_valid ? 1.0 : 0.0;
+                wheel_sensor_online_ = wheel_sample_valid;
             }
+
+            wheel_sensor_mahalanobis_sq_ =
+                wheel_sample_valid ? wheel_sensor_mahalanobis_sq(body_kf, body_kf_u, s, ds)
+                                   : std::numeric_limits<double>::infinity();
+            const bool wheel_sensor_was_online = wheel_sensor_online_;
+            update_wheel_sensor_confidence(
+                wheel_sample_valid, wheel_sensor_mahalanobis_sq_, wheel_sensor_confidence_, wheel_sensor_online_);
+            update_wheel_sensor_variance_elevation(wheel_sensor_mahalanobis_sq_, wheel_sensor_variance_elevated_);
+            if (!wheel_sensor_was_online && wheel_sensor_online_ && wheel_sample_valid) {
+                ds_filter_.reset(wheel_velocity);
+                ds = wheel_velocity;
+            }
+
+            const bool use_wheel_sensor = wheel_sample_valid && wheel_sensor_online_;
+            if (use_wheel_sensor) {
+                wheel_kf.update(Eigen::Matrix<double, 1, 1>::Constant(wheel_position), Eigen::Matrix<double, 1, 1>::Constant(ax));
+            } else {
+                wheel_kf.predict(Eigen::Matrix<double, 1, 1>::Constant(ax));
+            }
+            Eigen::Vector2d wheel_state = wheel_kf.state();
+
+            if (std::abs(wheel_state[0] - ref_pos) > 1.5f) // 防止位置误差过大导致控制器发散
+                wheel_state[0] = ref_pos + (wheel_state[0] - ref_pos) / std::abs(wheel_state[0] - ref_pos) * 1.5f;
+
+            set_body_kf_wheel_observation_enabled(body_kf, use_wheel_sensor, wheel_sensor_variance_elevated_);
+            BodyKf::MeasVec body_kf_y;
+            body_kf_y << s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb, ax;
             body_kf.update(body_kf_y, body_kf_u, kControlDt, body_kf_d);
-            anchor_body_kf_direct_positions(body_kf, x, s, phi, thll, thlr, thb);
+            anchor_body_kf_direct_positions(body_kf, x, s, phi, thll, thlr, thb, use_wheel_sensor, wheel_sensor_variance_elevated_);
+            debug_log(
+                "wheel_gate:use=%d online=%d conf=%lf md2=%lf var=%lf raw_s=%lf raw_ds=%lf",
+                use_wheel_sensor ? 1 : 0, wheel_sensor_online_ ? 1 : 0, wheel_sensor_confidence_,
+                wheel_sensor_mahalanobis_sq_, body_kf_wheel_s_variance(wheel_sensor_variance_elevated_), wheel_position,
+                wheel_velocity);
 
             // 填写参考输入
 

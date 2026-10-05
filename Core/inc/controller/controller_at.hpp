@@ -104,6 +104,10 @@ private:
     Eigen::Vector4d previous_lqr_command_{Eigen::Vector4d::Zero()};
     bool lqr_disturbance_observer_initialized_{false};
     bool body_kf_initialized_{false};
+    double wheel_sensor_confidence_{1.0};
+    double wheel_sensor_mahalanobis_sq_{0.0};
+    bool wheel_sensor_online_{true};
+    bool wheel_sensor_variance_elevated_{false};
 
     int sub_stage{0};
     uint64_t stage_time_tick{0};
