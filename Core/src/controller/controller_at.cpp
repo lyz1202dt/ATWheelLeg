@@ -23,12 +23,7 @@ constexpr double kBodyKfWheelOfflineVariance = 1.0e12;
 constexpr double kBodyKfWheelElevatedVariance = 30.0;
 constexpr double kWheelSensorGateSVariance   = 0.25;
 constexpr double kWheelSensorGateDsVariance  = 2.25;
-constexpr double kWheelSensorRejectMahalanobisSq = 13.82; // chi-square 2D, about 99.9%
-constexpr double kWheelSensorRecoverMahalanobisSq = 5.99; // chi-square 2D, about 95%
-constexpr double kWheelSensorConfidenceDecay      = 0.04;
-constexpr double kWheelSensorConfidenceRecover    = 0.01;
-constexpr double kWheelSensorOfflineConfidence    = 0.2;
-constexpr double kWheelSensorOnlineConfidence     = 0.8;
+constexpr double kWheelSensorRejectMahalanobisSq = 0.2; // chi-square 2D, about 99.9%
 constexpr double kWheelSensorVarianceElevateMahalanobisSq = 0.1;
 constexpr double kWheelSensorVarianceRestoreMahalanobisSq = 0.07;
 
@@ -169,22 +164,8 @@ double wheel_sensor_mahalanobis_sq(
     return std::max(0.0, innovation.dot(normalized_innovation));
 }
 
-void update_wheel_sensor_confidence(
-    bool sample_valid, double mahalanobis_sq, double& confidence, bool& online) {
-    if (!sample_valid || !std::isfinite(mahalanobis_sq)) {
-        confidence = 0.0;
-    } else if (mahalanobis_sq > kWheelSensorRejectMahalanobisSq) {
-        confidence = std::max(0.0, confidence - kWheelSensorConfidenceDecay);
-    } else if (mahalanobis_sq < kWheelSensorRecoverMahalanobisSq) {
-        confidence = std::min(1.0, confidence + kWheelSensorConfidenceRecover);
-    }
-
-    if (online && confidence <= kWheelSensorOfflineConfidence) {
-        online = false;
-    } else if (!online && sample_valid && mahalanobis_sq < kWheelSensorRecoverMahalanobisSq
-               && confidence >= kWheelSensorOnlineConfidence) {
-        online = true;
-    }
+bool is_wheel_sensor_trusted(bool sample_valid, double mahalanobis_sq) {
+    return sample_valid && std::isfinite(mahalanobis_sq) && mahalanobis_sq <= kWheelSensorRejectMahalanobisSq;
 }
 
 void update_wheel_sensor_variance_elevation(double mahalanobis_sq, bool& elevated) {
@@ -367,7 +348,6 @@ bool ControllerAT::update(uint64_t ms) {
         lqr_disturbance_observer_initialized_ = false;
         lqr_disturbance_.setZero();
         body_kf_initialized_ = false;
-        wheel_sensor_confidence_ = 1.0;
         wheel_sensor_mahalanobis_sq_ = 0.0;
         wheel_sensor_online_ = true;
         wheel_sensor_variance_elevated_ = false;
@@ -580,7 +560,6 @@ bool ControllerAT::update(uint64_t ms) {
         if (!body_kf_initialized_) {
             body_kf.reset(make_body_kf_state(s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb), make_body_kf_p0());
             body_kf_initialized_ = true;
-            wheel_sensor_confidence_ = wheel_sample_valid ? 1.0 : 0.0;
             wheel_sensor_online_ = wheel_sample_valid;
         }
 
@@ -588,8 +567,7 @@ bool ControllerAT::update(uint64_t ms) {
             wheel_sample_valid ? wheel_sensor_mahalanobis_sq(body_kf, body_kf_u, s, ds)
                                : std::numeric_limits<double>::infinity();
         const bool wheel_sensor_was_online = wheel_sensor_online_;
-        update_wheel_sensor_confidence(
-            wheel_sample_valid, wheel_sensor_mahalanobis_sq_, wheel_sensor_confidence_, wheel_sensor_online_);
+        wheel_sensor_online_ = is_wheel_sensor_trusted(wheel_sample_valid, wheel_sensor_mahalanobis_sq_);
         update_wheel_sensor_variance_elevation(wheel_sensor_mahalanobis_sq_, wheel_sensor_variance_elevated_);
         if (!wheel_sensor_was_online && wheel_sensor_online_ && wheel_sample_valid) {
             ds_filter_.reset(wheel_velocity);
@@ -623,9 +601,9 @@ bool ControllerAT::update(uint64_t ms) {
         }
 
         debug_log(
-            "wheel_gate:use=%d online=%d conf=%lf md2=%lf var=%lf raw_s=%lf raw_ds=%lf",
-            use_wheel_sensor ? 1 : 0, wheel_sensor_online_ ? 1 : 0, wheel_sensor_confidence_,
-            wheel_sensor_mahalanobis_sq_, body_kf_wheel_s_variance(wheel_sensor_variance_elevated_), wheel_position, wheel_velocity);
+            "wheel_gate:use=%d online=%d md2=%lf var=%lf raw_s=%lf raw_ds=%lf",
+            use_wheel_sensor ? 1 : 0, wheel_sensor_online_ ? 1 : 0, wheel_sensor_mahalanobis_sq_,
+            body_kf_wheel_s_variance(wheel_sensor_variance_elevated_), wheel_position, wheel_velocity);
 
         // 填写参考输入
         ref_pos += ref_vel * kControlDt;
@@ -958,7 +936,6 @@ bool ControllerAT::update(uint64_t ms) {
             if (!body_kf_initialized_) {
                 body_kf.reset(make_body_kf_state(s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb), make_body_kf_p0());
                 body_kf_initialized_ = true;
-                wheel_sensor_confidence_ = wheel_sample_valid ? 1.0 : 0.0;
                 wheel_sensor_online_ = wheel_sample_valid;
             }
 
@@ -966,8 +943,7 @@ bool ControllerAT::update(uint64_t ms) {
                 wheel_sample_valid ? wheel_sensor_mahalanobis_sq(body_kf, body_kf_u, s, ds)
                                    : std::numeric_limits<double>::infinity();
             const bool wheel_sensor_was_online = wheel_sensor_online_;
-            update_wheel_sensor_confidence(
-                wheel_sample_valid, wheel_sensor_mahalanobis_sq_, wheel_sensor_confidence_, wheel_sensor_online_);
+            wheel_sensor_online_ = is_wheel_sensor_trusted(wheel_sample_valid, wheel_sensor_mahalanobis_sq_);
             update_wheel_sensor_variance_elevation(wheel_sensor_mahalanobis_sq_, wheel_sensor_variance_elevated_);
             if (!wheel_sensor_was_online && wheel_sensor_online_ && wheel_sample_valid) {
                 ds_filter_.reset(wheel_velocity);
@@ -991,10 +967,9 @@ bool ControllerAT::update(uint64_t ms) {
             body_kf.update(body_kf_y, body_kf_u, kControlDt, body_kf_d);
             anchor_body_kf_direct_positions(body_kf, x, s, phi, thll, thlr, thb, use_wheel_sensor, wheel_sensor_variance_elevated_);
             debug_log(
-                "wheel_gate:use=%d online=%d conf=%lf md2=%lf var=%lf raw_s=%lf raw_ds=%lf",
-                use_wheel_sensor ? 1 : 0, wheel_sensor_online_ ? 1 : 0, wheel_sensor_confidence_,
-                wheel_sensor_mahalanobis_sq_, body_kf_wheel_s_variance(wheel_sensor_variance_elevated_), wheel_position,
-                wheel_velocity);
+                "wheel_gate:use=%d online=%d md2=%lf var=%lf raw_s=%lf raw_ds=%lf",
+                use_wheel_sensor ? 1 : 0, wheel_sensor_online_ ? 1 : 0, wheel_sensor_mahalanobis_sq_,
+                body_kf_wheel_s_variance(wheel_sensor_variance_elevated_), wheel_position, wheel_velocity);
 
             // 填写参考输入
 
