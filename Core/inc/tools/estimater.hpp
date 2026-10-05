@@ -171,6 +171,7 @@ public:
     using StateMat    = Eigen::Matrix<double, NX, NX>;      // 状态转移矩阵 A
     using ControlMat  = Eigen::Matrix<double, NX, NU>;      // 控制矩阵 B
     using MeasMat     = Eigen::Matrix<double, NY, NX>;      // 观测矩阵 H
+    using MeasControlMat = Eigen::Matrix<double, NY, NU>;   // 观测输入矩阵 D
     using ProcessNoiseMat = Eigen::Matrix<double, NX, NX>;  // 过程噪声协方差 Q
     using MeasNoiseMat    = Eigen::Matrix<double, NY, NY>;  // 观测噪声协方差 R
     using GainMat         = Eigen::Matrix<double, NX, NY>;  // 卡尔曼增益 K
@@ -258,6 +259,63 @@ public:
         //P_ = (I_ - K * H) * P_;
 
         // 若需要数值稳定性，可改用 Joseph 形式：
+        P_ = (I_ - K*H) * P_ * (I_ - K*H).transpose() + K * R * K.transpose();
+    }
+
+    /**
+     * @brief 卡尔曼滤波更新（预测 + 校正），将 A/B 视为连续时间系统矩阵
+     * @param y   观测值
+     * @param u   控制输入
+     * @param dt  离散时间步长，单位 s
+     */
+    void update(const MeasVec& y, const ControlVec& u, double dt)
+    {
+        // ---------- 1. 欧拉离散化 ----------
+        // 连续系统: dx/dt = A*x + B*u
+        // 一阶离散: x[k+1] = (I + A*dt)*x[k] + (B*dt)*u[k]
+        const StateMat Ad  = I_ + A * dt;
+        const ControlMat Bd = B * dt;
+        const ProcessNoiseMat Qd = Q * dt;
+
+        // ---------- 2. 预测（Time Update） ----------
+        x_ = Ad * x_ + Bd * u;
+        P_ = Ad * P_ * Ad.transpose() + Qd;
+
+        // ---------- 3. 校正（Measurement Update） ----------
+        MeasVec ey_ = y - H * x_;
+        Eigen::Matrix<double, NY, NY> S = H * P_ * H.transpose() + R;
+        GainMat K = P_ * H.transpose() * S.inverse();
+
+        x_ = x_ + K * ey_;
+        P_ = (I_ - K*H) * P_ * (I_ - K*H).transpose() + K * R * K.transpose();
+    }
+
+    /**
+     * @brief 卡尔曼滤波更新（预测 + 校正），支持观测直接受控制输入影响
+     * @param y   观测值
+     * @param u   控制输入
+     * @param dt  离散时间步长，单位 s
+     * @param D   观测输入矩阵，观测模型 y = H*x + D*u
+     */
+    void update(const MeasVec& y, const ControlVec& u, double dt, const MeasControlMat& D)
+    {
+        // ---------- 1. 欧拉离散化 ----------
+        // 连续系统: dx/dt = A*x + B*u
+        // 一阶离散: x[k+1] = (I + A*dt)*x[k] + (B*dt)*u[k]
+        const StateMat Ad  = I_ + A * dt;
+        const ControlMat Bd = B * dt;
+        const ProcessNoiseMat Qd = Q * dt;
+
+        // ---------- 2. 预测（Time Update） ----------
+        x_ = Ad * x_ + Bd * u;
+        P_ = Ad * P_ * Ad.transpose() + Qd;
+
+        // ---------- 3. 校正（Measurement Update） ----------
+        MeasVec ey_ = y - H * x_ - D * u;
+        Eigen::Matrix<double, NY, NY> S = H * P_ * H.transpose() + R;
+        GainMat K = P_ * H.transpose() * S.inverse();
+
+        x_ = x_ + K * ey_;
         P_ = (I_ - K*H) * P_ * (I_ - K*H).transpose() + K * R * K.transpose();
     }
 

@@ -77,6 +77,7 @@ private:
     bool reset_traj_generated{false};
     uint64_t time_point{0U};
 
+    kf::KalmanFilter<10, 4, 11> body_kf;
     kf::KalmanFilter<2, 1, 1> wheel_kf;
     LowPassFilter ds_filter_;
     LowPassFilter dphi_filter_;
@@ -102,6 +103,7 @@ private:
     Eigen::Vector4d lqr_disturbance_{Eigen::Vector4d::Zero()};
     Eigen::Vector4d previous_lqr_command_{Eigen::Vector4d::Zero()};
     bool lqr_disturbance_observer_initialized_{false};
+    bool body_kf_initialized_{false};
 
     int sub_stage{0};
     uint64_t stage_time_tick{0};

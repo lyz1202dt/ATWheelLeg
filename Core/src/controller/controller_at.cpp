@@ -1,4 +1,5 @@
 #include "controller/controller_at.hpp"
+#include <Eigen/src/Core/DiagonalMatrix.h>
 #include <Eigen/src/Core/Matrix.h>
 #include <algorithm>
 #include <cmath>
@@ -8,6 +9,15 @@ namespace {
 
 constexpr double kControlDt        = 0.002;
 constexpr double kLqrLesoBandwidth = 30.0;
+constexpr double kGravity          = 9.80665;
+constexpr double kBodyKfNominalLegLength = 0.25;
+constexpr double kBodyKfSVariance        = 50.0;
+constexpr double kBodyKfPhiVariance      = 1e-4;
+constexpr double kBodyKfLegAngleVariance = 1e-4;
+constexpr double kBodyKfBodyAngleVariance = 1e-5;
+constexpr double kBodyKfAccelVariance     = 25.0;
+
+using BodyKf = kf::KalmanFilter<10, 4, 11>;
 
 Eigen::Matrix<double, 10, 10> make_lqr_a_025() {
     Eigen::Matrix<double, 10, 10> a;
@@ -30,6 +40,124 @@ Eigen::Matrix<double, 10, 4> make_lqr_b_025() {
     return b;
 }
 
+Eigen::Matrix<double, 10, 10> make_body_kf_q() {
+    Eigen::Matrix<double, 10, 1> q;
+    // Q is treated as continuous-time process noise and is multiplied by dt
+    // in KalmanFilter::update(y, u, dt). The velocity states need enough
+    // process noise to let the direct low-pass velocity observations correct
+    // model/input mismatch at 500 Hz.
+    q << 1e-5, 5.0,  // s, ds
+        1e-6, 2.0,   // phi, dphi
+        1e-5, 20.0,  // thll, dthll
+        1e-5, 20.0,  // thlr, dthlr
+        1e-6, 10.0;  // thb, dthb
+    return q.asDiagonal();
+}
+
+Eigen::Matrix<double, 11, 11> make_body_kf_r() {
+    Eigen::Matrix<double, 11, 1> r;
+    r << kBodyKfSVariance, // s
+        50.0,  // ds, low-pass wheel velocity
+        kBodyKfPhiVariance,  // phi
+        2e-2,  // dphi, low-pass yaw rate
+        kBodyKfLegAngleVariance,  // thll
+        5e-2,  // dthll, low-pass left leg angular velocity
+        kBodyKfLegAngleVariance,  // thlr
+        5e-2,  // dthlr, low-pass right leg angular velocity
+        kBodyKfBodyAngleVariance,  // thb
+        2e-2,  // dthb, low-pass pitch rate
+        kBodyKfAccelVariance;  // ax, includes sensor noise plus linearized-model mismatch
+    return r.asDiagonal();
+}
+
+Eigen::Matrix<double, 10, 10> make_body_kf_p0() {
+    Eigen::Matrix<double, 10, 1> p0;
+    p0 << 5e-2, 5e-1, // s, ds
+        2e-2, 1e-1,   // phi, dphi
+        4e-2, 1e-1,   // thll, dthll
+        4e-2, 1e-1,   // thlr, dthlr
+        1e-2, 1e-1;   // thb, dthb
+    return p0.asDiagonal();
+}
+
+Eigen::Matrix<double, 1, 10> make_body_accel_h(
+    const Eigen::Matrix<double, 10, 10>& A, double left_leg_length, double right_leg_length) {
+    return A.row(1) + 0.5 * left_leg_length * A.row(5) + 0.5 * right_leg_length * A.row(7);
+}
+
+Eigen::Matrix<double, 1, 4> make_body_accel_d(
+    const Eigen::Matrix<double, 10, 4>& B, double left_leg_length, double right_leg_length) {
+    return B.row(1) + 0.5 * left_leg_length * B.row(5) + 0.5 * right_leg_length * B.row(7);
+}
+
+BodyKf::MeasControlMat make_body_kf_d(const BodyKf& body_kf, double left_leg_length, double right_leg_length) {
+    BodyKf::MeasControlMat d = BodyKf::MeasControlMat::Zero();
+    d.row(10) = make_body_accel_d(body_kf.B, left_leg_length, right_leg_length);
+    return d;
+}
+
+void update_body_accel_observation(BodyKf& body_kf, double left_leg_length, double right_leg_length) {
+    body_kf.H.row(10) = make_body_accel_h(body_kf.A, left_leg_length, right_leg_length);
+}
+
+double forward_linear_acceleration(
+    const Eigen::Quaternionf& orientation, const Eigen::Vector3d& acceleration, double yaw) {
+    const Eigen::Matrix3d base_link_to_world = orientation.toRotationMatrix().cast<double>();
+    const Eigen::Vector3d specific_force_in_world = base_link_to_world * acceleration;
+    const Eigen::Vector3d linear_acceleration_in_world = specific_force_in_world + Eigen::Vector3d(0.0, 0.0, -kGravity);
+    const Eigen::Vector3d forward_in_world(std::cos(yaw), std::sin(yaw), 0.0);
+    return forward_in_world.dot(linear_acceleration_in_world);
+}
+
+BodyKf::StateVec make_body_kf_state(
+    double s, double ds, double phi, double dphi, double thll, double dthll, double thlr, double dthlr, double thb, double dthb) {
+    BodyKf::StateVec state;
+    state << s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb;
+    return state;
+}
+
+BodyKf::ControlVec make_body_kf_input_from_motor_torque(
+    double left_wheel_torque, double right_wheel_torque,
+    const Eigen::Vector2d& left_leg_effort, const Eigen::Vector2d& right_leg_effort) {
+    BodyKf::ControlVec input;
+    // leg_effort[1] is the generalized torque around the simplified rigid leg root.
+    input << left_wheel_torque, right_wheel_torque, left_leg_effort[1], right_leg_effort[1];
+    if (!input.allFinite()) {
+        input.setZero();
+    }
+    return input;
+}
+
+BodyKf::StateVec make_body_control_state(
+    const BodyKf& body_kf, double s, double phi, double thll, double thlr, double thb) {
+    BodyKf::StateVec state = body_kf.state();
+    state[0] = s;
+    state[2] = phi;
+    state[4] = thll;
+    state[6] = thlr;
+    state[8] = thb;
+    return state;
+}
+
+void anchor_body_kf_direct_positions(
+    BodyKf& body_kf, BodyKf::StateVec& state, double s, double phi, double thll, double thlr, double thb) {
+    auto covariance = body_kf.covariance();
+    state = make_body_control_state(body_kf, s, phi, thll, thlr, thb);
+
+    const auto anchor = [&covariance](const Eigen::Index index, const double variance) {
+        covariance.row(index).setZero();
+        covariance.col(index).setZero();
+        covariance(index, index) = variance;
+    };
+    anchor(0, kBodyKfSVariance);
+    anchor(2, kBodyKfPhiVariance);
+    anchor(4, kBodyKfLegAngleVariance);
+    anchor(6, kBodyKfLegAngleVariance);
+    anchor(8, kBodyKfBodyAngleVariance);
+
+    body_kf.reset(state, covariance);
+}
+
 } // namespace
 
 ControllerAT::ControllerAT(
@@ -37,6 +165,11 @@ ControllerAT::ControllerAT(
     DebugLogger debug_logger)
     : ControllerBase(imu, lf, rf, lb, rb, lw, rw, std::move(debug_logger))
     , gain_scheduler_func(std::move(func))
+    , body_kf(
+          make_lqr_a_025(), make_lqr_b_025(),
+          Eigen::Matrix<double, 11, 10>::Zero(),
+          make_body_kf_q(),
+          make_body_kf_r())
     , wheel_kf(
           (Eigen::Matrix2d() << 1.0, 0.002, 0.0, 1.0).finished(), (Eigen::Matrix<double, 2, 1>() << 0.5 * 0.002 * 0.002, 0.002).finished(),
           (Eigen::Matrix<double, 1, 2>() << 1.0, 0.0).finished(), (Eigen::Matrix2d() << 0.005, 0.0, 0.0, 0.002).finished(),
@@ -57,6 +190,13 @@ ControllerAT::ControllerAT(
     }
     leg_calc_ = std::make_unique<OffsetParallelCalc>(0.0945, 0.0945, 0.1125, 0.1125, 0.1155, 0.2502);
     wheel_kf.reset(Eigen::Vector2d::Zero(), Eigen::Matrix2d::Identity() * 10.0);
+
+    body_kf.H.block<10, 10>(0, 0).setIdentity(); // s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb
+    // IMU forward acceleration observes the body horizontal acceleration:
+    // sb ~= s + 0.5*ll*thll + 0.5*lr*thlr, so
+    // ax ~= dds + 0.5*ll*ddthll + 0.5*lr*ddthlr.
+    update_body_accel_observation(body_kf, kBodyKfNominalLegLength, kBodyKfNominalLegLength);
+    body_kf.reset(Eigen::Vector<double, 10>::Zero(), make_body_kf_p0());
 
     const auto lqr_a = make_lqr_a_025();
     const auto lqr_b = make_lqr_b_025();
@@ -124,10 +264,9 @@ bool ControllerAT::update(uint64_t ms) {
 
     if (state != LQR_CTRL && state != LQR_STEP && state != LQR_JUMP) {
         yaw_tracking_initialized_ = false;
-    }
-    if (state != LQR_CTRL && state != LQR_STEP && state != LQR_JUMP) {
         lqr_disturbance_observer_initialized_ = false;
         lqr_disturbance_.setZero();
+        body_kf_initialized_ = false;
         previous_lqr_command_.setZero();
     }
 
@@ -273,11 +412,10 @@ bool ControllerAT::update(uint64_t ms) {
             }
         }
     } else if (state == LQR_CTRL || state == LQR_JUMP) {
-        // 取自然坐标系下的加速度
-        const Eigen::Matrix3d base_link_to_world    = orientation.toRotationMatrix().cast<double>();
-        const Eigen::Vector3d acceleration_in_world = base_link_to_world * acceleration;
-        const Eigen::Vector3d forward_in_world(std::cos(yaw), std::sin(yaw), 0.0);
-        const double ax = forward_in_world.dot(acceleration_in_world);
+        // IMU acceleration is treated as specific force:
+        // rotate it to world frame, restore linear acceleration by adding gravity,
+        // then project it onto the horizontal forward direction.
+        const double ax = forward_linear_acceleration(orientation, acceleration, yaw);
 
         if (std::abs(roll) > 0.35f || std::abs(pitch) > 0.3f) {
             state = READY_STAND;
@@ -329,13 +467,29 @@ bool ControllerAT::update(uint64_t ms) {
 
 
         wheel_kf.update(Eigen::Matrix<double, 1, 1>::Constant(wheel_position), Eigen::Matrix<double, 1, 1>::Constant(ax));
-        Eigen::Vector2d wheel_state = wheel_kf.state();
+        Eigen::Vector2d wheel_state= wheel_kf.state();
 
 
         if (std::abs(wheel_state[0] - ref_pos) > 5.0f) // 防止位置误差过大导致控制器发散
             ref_pos = wheel_state[0] + (ref_pos-wheel_state[0]) / std::abs(wheel_state[0] - ref_pos) * 5.0f;
 
-        x << wheel_state[0], wheel_state[1], phi, dphi, thll, dthll, thlr, dthlr, thb, dthb;
+        update_body_accel_observation(body_kf, left_leg_pos[0], right_leg_pos[0]);
+        const BodyKf::MeasControlMat body_kf_d = make_body_kf_d(body_kf, left_leg_pos[0], right_leg_pos[0]);
+        const BodyKf::ControlVec body_kf_u =
+            make_body_kf_input_from_motor_torque(lw->state.toqeue, rw->state.toqeue, left_leg_force, right_leg_force);
+        BodyKf::MeasVec body_kf_y;
+        body_kf_y << s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb, ax;
+        if (!body_kf_initialized_) {
+            body_kf.reset(make_body_kf_state(s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb), make_body_kf_p0());
+            body_kf_initialized_ = true;
+        }
+        body_kf.update(body_kf_y, body_kf_u, kControlDt, body_kf_d);
+        anchor_body_kf_direct_positions(body_kf, x, s, phi, thll, thlr, thb);
+
+        debug_log(
+            "x:[%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf]",x[0],x[1],x[2],x[3],x[4],x[5],x[6],x[7],x[8],x[9]);
+        debug_log(
+            "raw:[%lf,%lf,%lf,%lf,%lf] rawvel:[%lf,%lf,%lf,%lf,%lf]", s, phi, thll, thlr, thb, ds, dphi, dthll, dthlr, dthb);
 
         // 填写参考输入
         ref_pos += ref_vel * kControlDt;
@@ -347,6 +501,20 @@ bool ControllerAT::update(uint64_t ms) {
 
         // u = sp.Matrix([Twl, Twr, Tbl, Tbr])
         u = Eigen::Vector4d::Zero(); // LQR控制律
+
+        const auto kfx = body_kf.state();
+const auto f = body_kf.A * kfx + body_kf.B * body_kf_u;
+const double ax_hat =
+    (body_kf.H.row(10) * kfx)(0) + (body_kf_d.row(10) * body_kf_u)(0);
+
+debug_log(
+    "kfpos:[%lf,%lf,%lf,%lf,%lf] kfvel:[%lf,%lf,%lf,%lf,%lf] ax:%lf ax_hat:%lf ax_err:%lf fveldot:[%lf,%lf,%lf,%lf,%lf] u:[%lf,%lf,%lf,%lf]",
+    kfx[0], kfx[2], kfx[4], kfx[6], kfx[8],
+    kfx[1], kfx[3], kfx[5], kfx[7], kfx[9],
+    ax, ax_hat, ax - ax_hat,
+    f[1], f[3], f[5], f[7], f[9],
+    body_kf_u[0], body_kf_u[1], body_kf_u[2], body_kf_u[3]);
+
 
 
         const bool left_in_contact  = left_leg_force_filtered > 25.0;
@@ -370,10 +538,10 @@ bool ControllerAT::update(uint64_t ms) {
         //     lqr_disturbance_observer_initialized_ = false;
         // }
 
-        debug_log(
-            "left_length:%lf,right_length:%lf\nleft_force:%lf,right_force:%lf\n,disturbance_:[%lf,%lf,%lf,%lf]", left_leg_pos[0],
-            right_leg_pos[0], left_leg_force_filtered, right_leg_force_filtered, lqr_disturbance_[0], lqr_disturbance_[1],
-            lqr_disturbance_[2], lqr_disturbance_[3]);
+        // debug_log(
+        //     "left_length:%lf,right_length:%lf\nleft_force:%lf,right_force:%lf\n,disturbance_:[%lf,%lf,%lf,%lf]", left_leg_pos[0],
+        //     right_leg_pos[0], left_leg_force_filtered, right_leg_force_filtered, lqr_disturbance_[0], lqr_disturbance_[1],
+        //     lqr_disturbance_[2], lqr_disturbance_[3]);
 
         if (left_in_contact && right_in_contact)         // 两轮接地
         {
@@ -504,11 +672,10 @@ bool ControllerAT::update(uint64_t ms) {
             finished_step = false;
         }
     } else if (state == LQR_STEP) {
-        // 取自然坐标系下的加速度
-        const Eigen::Matrix3d base_link_to_world    = orientation.toRotationMatrix().cast<double>();
-        const Eigen::Vector3d acceleration_in_world = base_link_to_world * acceleration;
-        const Eigen::Vector3d forward_in_world(std::cos(yaw), std::sin(yaw), 0.0);
-        const double ax = forward_in_world.dot(acceleration_in_world);
+        // IMU acceleration is treated as specific force:
+        // rotate it to world frame, restore linear acceleration by adding gravity,
+        // then project it onto the horizontal forward direction.
+        const double ax = forward_linear_acceleration(orientation, acceleration, yaw);
 
         // 计算腿的位置，速度，受力
         Eigen::Vector2d left_joint_pos(lf->state.rad, lb->state.rad);
@@ -650,12 +817,24 @@ bool ControllerAT::update(uint64_t ms) {
             if (std::abs(wheel_state[0] - ref_pos) > 1.5f) // 防止位置误差过大导致控制器发散
                 wheel_state[0] = ref_pos + (wheel_state[0] - ref_pos) / std::abs(wheel_state[0] - ref_pos) * 1.5f;
 
-            x << wheel_state[0], wheel_state[1], phi, dphi, thll, dthll, thlr, dthlr, thb, dthb;
+            update_body_accel_observation(body_kf, left_leg_pos[0], right_leg_pos[0]);
+            const BodyKf::MeasControlMat body_kf_d = make_body_kf_d(body_kf, left_leg_pos[0], right_leg_pos[0]);
+            const BodyKf::ControlVec body_kf_u =
+                make_body_kf_input_from_motor_torque(lw->state.toqeue, rw->state.toqeue, left_leg_force, right_leg_force);
+            BodyKf::MeasVec body_kf_y;
+            body_kf_y << s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb, ax;
+            if (!body_kf_initialized_) {
+                body_kf.reset(make_body_kf_state(s, ds, phi, dphi, thll, dthll, thlr, dthlr, thb, dthb), make_body_kf_p0());
+                body_kf_initialized_ = true;
+            }
+            body_kf.update(body_kf_y, body_kf_u, kControlDt, body_kf_d);
+            anchor_body_kf_direct_positions(body_kf, x, s, phi, thll, thlr, thb);
 
             // 填写参考输入
 
 
             u = K * (xd - x);
+            previous_lqr_command_ = u;
 
             constexpr double body_width        = 0.34;
             const double leg_height_roll       = std::atan2(right_leg_pos[0] - left_leg_pos[0], body_width);
