@@ -510,23 +510,30 @@ HAL_StatusTypeDef Bmi088::transfer(Device device, const uint8_t *tx_data,
     }
 
     struct BlockingContext {
+        const Bmi088 *owner = nullptr;
+        Device device = Device::Accel;
         volatile bool done = false;
         HAL_StatusTypeDef status = HAL_BUSY;
     };
 
     BlockingContext context;
-    bsp::SPITransfer transfer;
+    context.owner = this;
+    context.device = device;
+
+    bsp::SpiTransferEvent transfer = {};
     transfer.tx_data = tx_data;
     transfer.rx_data = rx_data;
     transfer.size = size;
-    transfer.param = &context;
-    transfer.pre_transmit_cb = [this, device](bsp::SPITransfer *) {
-        select(device);
+    transfer.context = &context;
+    transfer.before_cb = [](bsp::SpiTransferEvent &event) {
+        auto *ctx = static_cast<BlockingContext *>(event.context);
+        ctx->owner->select(ctx->device);
     };
-    transfer.transmited_cb = [this, device, &context](bsp::SPITransfer *finished) {
-        context.status = finished->status;
-        deselect(device);
-        context.done = true;
+    transfer.after_cb = [](bsp::SpiTransferEvent &event) {
+        auto *ctx = static_cast<BlockingContext *>(event.context);
+        ctx->status = event.status;
+        ctx->owner->deselect(ctx->device);
+        ctx->done = true;
     };
 
     if (!bus_->transferIt(transfer)) {

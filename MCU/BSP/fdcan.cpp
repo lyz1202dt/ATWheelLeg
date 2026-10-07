@@ -1,153 +1,50 @@
 #include "fdcan.hpp"
 
-#include <utility>
-#include <vector>
+#include "task.h"
 
 namespace bsp {
 
-namespace {
-
-struct TxTransfer {
-    FdcanBus::Frame frame = {};
-    std::function<void(void *)> finished_callback;
-};
-
-struct CallbackState {
-    std::unordered_map<uint32_t, std::vector<std::function<void(const FdcanBus::Frame &)>>> receive_callbacks;
-
-    bool pending_tx = false;
-    TxTransfer pending_transfer = {};
-    std::unordered_map<uint32_t, TxTransfer> tx_transfers;
-};
-
-std::unordered_map<FDCAN_HandleTypeDef *, CallbackState> callback_states;
-
-CallbackState *findCallbackState(FDCAN_HandleTypeDef *hfdcan)
+FdcanBus::FdcanBus(FDCAN_HandleTypeDef& handle, uint32_t queue_length)
+    : handle_(&handle)
 {
-    const auto it = callback_states.find(hfdcan);
-    if (it == callback_states.end()) {
-        return nullptr;
-    }
-    return &it->second;
-}
-
-void clearPendingTransfer(CallbackState &state)
-{
-    state.pending_tx = false;
-    state.pending_transfer = {};
-}
-
-HAL_StatusTypeDef receiveFrame(FDCAN_HandleTypeDef *hfdcan,
-                               FdcanBus::Frame &frame,
-                               uint32_t rx_location)
-{
-    if (hfdcan == nullptr) {
-        return HAL_ERROR;
+    if (queue_length != 0U) {
+        tx_queue_ = xQueueCreate(static_cast<UBaseType_t>(queue_length),
+                                 sizeof(FdcanTransferEvent));
     }
 
-    FDCAN_RxHeaderTypeDef header = {};
-    const HAL_StatusTypeDef status = HAL_FDCAN_GetRxMessage(hfdcan, rx_location, &header, frame.data);
-    if (status != HAL_OK) {
-        return status;
-    }
-
-    frame.id = header.Identifier;
-    frame.id_type = header.IdType;
-    frame.frame_type = header.RxFrameType;
-    frame.data_length = header.DataLength;
-    frame.error_state_indicator = header.ErrorStateIndicator;
-    frame.bitrate_switch = header.BitRateSwitch;
-    frame.fd_format = header.FDFormat;
-    return HAL_OK;
-}
-
-void dispatchReceive(FdcanBus *bus, FDCAN_HandleTypeDef *hfdcan, uint32_t rx_location)
-{
-    CallbackState *state = findCallbackState(hfdcan);
-    if (bus == nullptr || state == nullptr) {
-        return;
-    }
-
-    const auto callbacks_it = state->receive_callbacks.find(rx_location);
-    if (callbacks_it == state->receive_callbacks.end() || callbacks_it->second.empty()) {
-        return;
-    }
-
-    while (HAL_FDCAN_GetRxFifoFillLevel(hfdcan, rx_location) != 0U) {
-        FdcanBus::Frame frame = {};
-        if (receiveFrame(hfdcan, frame, rx_location) != HAL_OK) {
-            return;
-        }
-
-        for (const auto &callback : callbacks_it->second) {
-            if (callback) {
-                callback(frame);
-            }
-        }
+    if (tx_queue_ != nullptr) {
+        instances()[handle_] = this;
     }
 }
 
-void dispatchPendingTransfer(FDCAN_HandleTypeDef *hfdcan,
-                             CallbackState &state,
-                             uint32_t buffer_indexes)
+FdcanBus::~FdcanBus()
 {
-    if (!state.pending_tx) {
-        return;
-    }
-
-    const uint32_t latest_buffer = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(hfdcan);
-    if ((latest_buffer == 0U) || ((buffer_indexes & latest_buffer) == 0U)) {
-        return;
-    }
-
-    TxTransfer transfer = std::move(state.pending_transfer);
-    clearPendingTransfer(state);
-    if (transfer.finished_callback) {
-        transfer.finished_callback(static_cast<void *>(&transfer.frame));
+    instances().erase(handle_);
+    if (tx_queue_ != nullptr) {
+        vQueueDelete(tx_queue_);
+        tx_queue_ = nullptr;
     }
 }
 
-void dispatchCompletedTransfers(FDCAN_HandleTypeDef *hfdcan, uint32_t buffer_indexes)
+std::unordered_map<FDCAN_HandleTypeDef*, FdcanBus*>& FdcanBus::instances()
 {
-    CallbackState *state = findCallbackState(hfdcan);
-    if (state == nullptr) {
-        return;
-    }
-
-    dispatchPendingTransfer(hfdcan, *state, buffer_indexes);
-
-    uint32_t remaining_indexes = buffer_indexes;
-    while (remaining_indexes != 0U) {
-        const uint32_t buffer_index = remaining_indexes & (~remaining_indexes + 1U);
-        remaining_indexes &= ~buffer_index;
-
-        auto state_it = callback_states.find(hfdcan);
-        if (state_it == callback_states.end()) {
-            return;
-        }
-
-        auto transfer_it = state_it->second.tx_transfers.find(buffer_index);
-        if (transfer_it == state_it->second.tx_transfers.end()) {
-            continue;
-        }
-
-        TxTransfer transfer = std::move(transfer_it->second);
-        state_it->second.tx_transfers.erase(transfer_it);
-        if (transfer.finished_callback) {
-            transfer.finished_callback(static_cast<void *>(&transfer.frame));
-        }
-    }
+    static std::unordered_map<FDCAN_HandleTypeDef*, FdcanBus*> instance_map;
+    return instance_map;
 }
 
-} // namespace
-
-std::unordered_map<FDCAN_HandleTypeDef *, FdcanBus *> FdcanBus::handle_map;
-
-HAL_StatusTypeDef FdcanBus::configFilter(const FDCAN_FilterTypeDef &filter) const
+FdcanBus* FdcanBus::find(FDCAN_HandleTypeDef* hfdcan)
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
+    const auto it = instances().find(hfdcan);
+    return it == instances().end() ? nullptr : it->second;
+}
+
+bool FdcanBus::inIsr() const
+{
+    return __get_IPSR() != 0U;
+}
+
+HAL_StatusTypeDef FdcanBus::configFilter(const FDCAN_FilterTypeDef& filter) const
+{
     return HAL_FDCAN_ConfigFilter(handle_, &filter);
 }
 
@@ -156,18 +53,15 @@ HAL_StatusTypeDef FdcanBus::configGlobalFilter(uint32_t non_matching_std,
                                                uint32_t reject_remote_std,
                                                uint32_t reject_remote_ext) const
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
-    return HAL_FDCAN_ConfigGlobalFilter(handle_, non_matching_std, non_matching_ext,
-                                        reject_remote_std, reject_remote_ext);
+    return HAL_FDCAN_ConfigGlobalFilter(handle_,
+                                        non_matching_std,
+                                        non_matching_ext,
+                                        reject_remote_std,
+                                        reject_remote_ext);
 }
 
 HAL_StatusTypeDef FdcanBus::configFifoWatermark(uint32_t fifo, uint32_t watermark) const
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
     return HAL_FDCAN_ConfigFifoWatermark(handle_, fifo, watermark);
 }
 
@@ -204,12 +98,8 @@ HAL_StatusTypeDef FdcanBus::configAcceptAllFilters(uint32_t std_filter_index,
     return configGlobalFilter();
 }
 
-HAL_StatusTypeDef FdcanBus::start(uint32_t active_its, uint32_t rx_fifo0_watermark) const
+HAL_StatusTypeDef FdcanBus::start(uint32_t active_its, uint32_t rx_fifo0_watermark)
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
-
     HAL_StatusTypeDef status = registerCallbacks();
     if (status != HAL_OK) {
         return status;
@@ -225,111 +115,237 @@ HAL_StatusTypeDef FdcanBus::start(uint32_t active_its, uint32_t rx_fifo0_waterma
         return status;
     }
 
-    return handle_ != nullptr ? HAL_FDCAN_Start(handle_) : HAL_ERROR;
+    return HAL_FDCAN_Start(handle_);
 }
 
 HAL_StatusTypeDef FdcanBus::stop() const
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
     return HAL_FDCAN_Stop(handle_);
 }
 
-HAL_StatusTypeDef FdcanBus::activateNotification(uint32_t active_its, uint32_t buffer_indexes) const
+HAL_StatusTypeDef FdcanBus::activateNotification(uint32_t active_its,
+                                                 uint32_t buffer_indexes) const
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
     return HAL_FDCAN_ActivateNotification(handle_, active_its, buffer_indexes);
 }
 
 HAL_StatusTypeDef FdcanBus::deactivateNotification(uint32_t inactive_its) const
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
     return HAL_FDCAN_DeactivateNotification(handle_, inactive_its);
 }
 
-HAL_StatusTypeDef FdcanBus::transmit(uint32_t id, const uint8_t *data, uint8_t length,
-                                     uint32_t id_type, uint32_t fd_format,
-                                     uint32_t bitrate_switch,
-                                     std::function<void(void *)> cplt_cb) const
+bool FdcanBus::enqueueTransfer(FdcanTransferEvent& event)
 {
-    if (data == nullptr || handle_ == nullptr) {
-        return HAL_ERROR;
+    if (!valid() || event.size == 0U || event.size > sizeof(event.frame.data)) {
+        return false;
     }
 
-    Frame frame = {};
-    frame.id = id;
-    frame.id_type = id_type;
-    frame.data_length = lengthToDlc(length);
-    frame.fd_format = fd_format;
-    frame.bitrate_switch = bitrate_switch;
+    event.handle = handle_;
+    event.status = HAL_OK;
+    event.error_code = HAL_FDCAN_ERROR_NONE;
+    event.tx_buffer_index = 0U;
+    event.frame.data_length = lengthToDlc(event.size);
 
-    const uint8_t copy_length = dlcToLength(frame.data_length);
-    for (uint8_t i = 0U; i < copy_length; ++i) {
-        frame.data[i] = data[i];
+    if (inIsr()) {
+        BaseType_t higher_priority_task_woken = pdFALSE;
+        if (xQueueSendFromISR(tx_queue_, &event, &higher_priority_task_woken) != pdPASS) {
+            return false;
+        }
+        (void)startNextTransfer(true, &higher_priority_task_woken);
+        portYIELD_FROM_ISR(higher_priority_task_woken);
+        return true;
     }
 
-    return transmit(frame, std::move(cplt_cb));
+    if (xQueueSend(tx_queue_, &event, 0U) != pdPASS) {
+        return false;
+    }
+
+    (void)startNextTransfer(false);
+    return true;
 }
 
-HAL_StatusTypeDef FdcanBus::transmit(const Frame &frame,
-                                     std::function<void(void *)> cplt_cb) const
+bool FdcanBus::takeNextTransfer(bool from_isr, BaseType_t* higher_priority_task_woken)
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
+    if (tx_active_) {
+        return false;
     }
 
-    CallbackState &state = callback_states[handle_];
-    state.pending_transfer.frame = frame;
-    state.pending_transfer.finished_callback = std::move(cplt_cb);
-    state.pending_tx = static_cast<bool>(state.pending_transfer.finished_callback);
+    bool has_transfer = false;
+    if (from_isr) {
+        const UBaseType_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
+        has_transfer =
+            xQueueReceiveFromISR(tx_queue_, &active_tx_, higher_priority_task_woken) == pdPASS;
+        tx_active_ = has_transfer;
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
+    } else {
+        taskENTER_CRITICAL();
+        has_transfer = xQueueReceive(tx_queue_, &active_tx_, 0U) == pdPASS;
+        tx_active_ = has_transfer;
+        taskEXIT_CRITICAL();
+    }
 
-    if (state.pending_tx) {
-        const HAL_StatusTypeDef notification_status =
-            HAL_FDCAN_ActivateNotification(handle_, FDCAN_IT_TX_COMPLETE, 0xFFFFFFFFU);
-        if (notification_status != HAL_OK) {
-            clearPendingTransfer(state);
-            return notification_status;
+    return has_transfer;
+}
+
+bool FdcanBus::startNextTransfer(bool from_isr, BaseType_t* higher_priority_task_woken)
+{
+    if (!takeNextTransfer(from_isr, higher_priority_task_woken)) {
+        return false;
+    }
+
+    active_tx_.status = HAL_BUSY;
+    if (active_tx_.before_cb != nullptr) {
+        active_tx_.before_cb(active_tx_);
+    }
+
+    HAL_StatusTypeDef status =
+        HAL_FDCAN_ActivateNotification(handle_, FDCAN_IT_TX_COMPLETE | FDCAN_IT_TX_ABORT_COMPLETE,
+                                       0xFFFFFFFFU);
+    if (status == HAL_OK) {
+        FDCAN_TxHeaderTypeDef header = makeTxHeader(active_tx_.frame);
+        status = HAL_FDCAN_AddMessageToTxFifoQ(handle_, &header, active_tx_.frame.data);
+    }
+
+    if (status != HAL_OK) {
+        completeTransmit(status, from_isr, true);
+        return false;
+    }
+
+    active_tx_.tx_buffer_index = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(handle_);
+    if (active_tx_.tx_buffer_index == 0U) {
+        completeTransmit(HAL_ERROR, from_isr, true);
+        return false;
+    }
+
+    return true;
+}
+
+void FdcanBus::clearActiveTransfer(bool from_isr)
+{
+    if (from_isr) {
+        const UBaseType_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
+        tx_active_ = false;
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
+    } else {
+        taskENTER_CRITICAL();
+        tx_active_ = false;
+        taskEXIT_CRITICAL();
+    }
+}
+
+void FdcanBus::completeTransmit(HAL_StatusTypeDef status, bool from_isr, bool start_next)
+{
+    if (tx_active_) {
+        active_tx_.status = status;
+        active_tx_.error_code = HAL_FDCAN_GetError(handle_);
+        FdcanTransferEvent finished_event = active_tx_;
+        clearActiveTransfer(from_isr);
+        if (finished_event.after_cb != nullptr) {
+            finished_event.after_cb(finished_event);
         }
     }
 
-    FDCAN_TxHeaderTypeDef header = makeTxHeader(frame);
+    BaseType_t higher_priority_task_woken = pdFALSE;
+    if (start_next) {
+        (void)startNextTransfer(from_isr, &higher_priority_task_woken);
+    }
+    if (from_isr) {
+        portYIELD_FROM_ISR(higher_priority_task_woken);
+    }
+}
+
+HAL_StatusTypeDef FdcanBus::submit(FdcanTransferEvent& event)
+{
+    return enqueueTransfer(event) ? HAL_OK : HAL_BUSY;
+}
+
+HAL_StatusTypeDef FdcanBus::transmit(uint32_t id,
+                                     const uint8_t* data,
+                                     uint8_t length,
+                                     uint32_t id_type,
+                                     uint32_t fd_format,
+                                     uint32_t bitrate_switch,
+                                     FdcanTransferEvent::Callback cplt_cb,
+                                     void* context)
+{
+    FdcanTransferEvent event = {};
+    event.frame.id = id;
+    event.frame.id_type = id_type;
+    event.frame.fd_format = fd_format;
+    event.frame.bitrate_switch = bitrate_switch;
+    event.size = length;
+    event.after_cb = cplt_cb;
+    event.context = context;
+
+    for (uint8_t i = 0U; i < length && i < sizeof(event.frame.data); ++i) {
+        event.frame.data[i] = data[i];
+    }
+
+    return submit(event);
+}
+
+HAL_StatusTypeDef FdcanBus::transmit(const Frame& frame,
+                                     FdcanTransferEvent::Callback cplt_cb,
+                                     void* context)
+{
+    FdcanTransferEvent event = {};
+    event.frame = frame;
+    event.size = dlcToLength(frame.data_length);
+    event.after_cb = cplt_cb;
+    event.context = context;
+    return submit(event);
+}
+
+HAL_StatusTypeDef FdcanBus::register_recv_cb(std::function<void(const Frame&)> recv_cb,
+                                             uint32_t rx_location)
+{
+    if (!recv_cb || (rx_location != FDCAN_RX_FIFO0 && rx_location != FDCAN_RX_FIFO1)) {
+        return HAL_ERROR;
+    }
+
+    instances()[handle_] = this;
+    receive_callbacks_[rx_location].push_back(std::move(recv_cb));
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef FdcanBus::receiveFrame(Frame& frame, uint32_t rx_location) const
+{
+    FDCAN_RxHeaderTypeDef header = {};
     const HAL_StatusTypeDef status =
-        HAL_FDCAN_AddMessageToTxFifoQ(handle_, &header, frame.data);
+        HAL_FDCAN_GetRxMessage(handle_, rx_location, &header, frame.data);
     if (status != HAL_OK) {
-        clearPendingTransfer(state);
         return status;
     }
 
-    if (state.pending_tx) {
-        const uint32_t buffer_index = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(handle_);
-        if (buffer_index == 0U) {
-            clearPendingTransfer(state);
-            return HAL_ERROR;
-        }
-        state.tx_transfers[buffer_index] = std::move(state.pending_transfer);
-        clearPendingTransfer(state);
-    }
-
+    frame.id = header.Identifier;
+    frame.id_type = header.IdType;
+    frame.frame_type = header.RxFrameType;
+    frame.data_length = header.DataLength;
+    frame.error_state_indicator = header.ErrorStateIndicator;
+    frame.bitrate_switch = header.BitRateSwitch;
+    frame.fd_format = header.FDFormat;
     return HAL_OK;
 }
 
-HAL_StatusTypeDef FdcanBus::register_recv_cb(std::function<void(const Frame &)> recv_cb,
-                                             uint32_t rx_location) const
+void FdcanBus::dispatchReceive(uint32_t rx_location)
 {
-    if (handle_ == nullptr || !recv_cb ||
-        (rx_location != FDCAN_RX_FIFO0 && rx_location != FDCAN_RX_FIFO1)) {
-        return HAL_ERROR;
+    auto callbacks_it = receive_callbacks_.find(rx_location);
+    if (callbacks_it == receive_callbacks_.end()) {
+        return;
     }
 
-    handle_map[handle_] = const_cast<FdcanBus *>(this);
-    CallbackState &state = callback_states[handle_];
-    state.receive_callbacks[rx_location].push_back(std::move(recv_cb));
-    return HAL_OK;
+    while (HAL_FDCAN_GetRxFifoFillLevel(handle_, rx_location) != 0U) {
+        Frame frame = {};
+        if (receiveFrame(frame, rx_location) != HAL_OK) {
+            return;
+        }
+
+        for (const auto& callback : callbacks_it->second) {
+            if (callback) {
+                callback(frame);
+            }
+        }
+    }
 }
 
 uint32_t FdcanBus::lengthToDlc(uint8_t length)
@@ -398,7 +414,7 @@ uint8_t FdcanBus::dlcToLength(uint32_t dlc)
     }
 }
 
-FDCAN_TxHeaderTypeDef FdcanBus::makeTxHeader(const Frame &frame)
+FDCAN_TxHeaderTypeDef FdcanBus::makeTxHeader(const Frame& frame)
 {
     FDCAN_TxHeaderTypeDef header = {};
     header.Identifier = frame.id;
@@ -413,12 +429,8 @@ FDCAN_TxHeaderTypeDef FdcanBus::makeTxHeader(const Frame &frame)
     return header;
 }
 
-HAL_StatusTypeDef FdcanBus::registerCallbacks() const
+HAL_StatusTypeDef FdcanBus::registerCallbacks()
 {
-    if (handle_ == nullptr) {
-        return HAL_ERROR;
-    }
-
 #if (USE_HAL_FDCAN_REGISTER_CALLBACKS == 1)
     bool registered = true;
 
@@ -496,7 +508,7 @@ HAL_StatusTypeDef FdcanBus::registerCallbacks() const
     }
 
     if (registered) {
-        handle_map[handle_] = const_cast<FdcanBus *>(this);
+        instances()[handle_] = this;
     }
     return registered ? HAL_OK : HAL_ERROR;
 #else
@@ -504,134 +516,124 @@ HAL_StatusTypeDef FdcanBus::registerCallbacks() const
 #endif
 }
 
-void FdcanBus::clockCalibrationCallback(FDCAN_HandleTypeDef *hfdcan,
-                                         uint32_t clk_calibration_its)
+void FdcanBus::clockCalibrationCallback(FDCAN_HandleTypeDef* hfdcan,
+                                        uint32_t clk_calibration_its)
 {
     (void)hfdcan;
     (void)clk_calibration_its;
 }
 
-void FdcanBus::txEventFifoCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t tx_event_fifo_its)
+void FdcanBus::txEventFifoCallback(FDCAN_HandleTypeDef* hfdcan, uint32_t tx_event_fifo_its)
 {
     (void)hfdcan;
     (void)tx_event_fifo_its;
 }
 
-void FdcanBus::rxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t rx_fifo0_its)
+void FdcanBus::rxFifo0Callback(FDCAN_HandleTypeDef* hfdcan, uint32_t rx_fifo0_its)
 {
     (void)rx_fifo0_its;
-    if (hfdcan == nullptr) {
-        return;
+    FdcanBus* bus = find(hfdcan);
+    if (bus != nullptr) {
+        bus->dispatchReceive(FDCAN_RX_FIFO0);
     }
-
-    const auto bus_it = handle_map.find(hfdcan);
-    if (bus_it == handle_map.end()) {
-        return;
-    }
-    dispatchReceive(bus_it->second, hfdcan, FDCAN_RX_FIFO0);
 }
 
-void FdcanBus::rxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t rx_fifo1_its)
+void FdcanBus::rxFifo1Callback(FDCAN_HandleTypeDef* hfdcan, uint32_t rx_fifo1_its)
 {
     (void)rx_fifo1_its;
-    if (hfdcan == nullptr) {
-        return;
-    }
-
-    const auto bus_it = handle_map.find(hfdcan);
-    if (bus_it == handle_map.end()) {
-        return;
-    }
-    dispatchReceive(bus_it->second, hfdcan, FDCAN_RX_FIFO1);
-}
-
-void FdcanBus::txFifoEmptyCallback(FDCAN_HandleTypeDef *hfdcan)
-{
-    (void)hfdcan;
-}
-
-void FdcanBus::txBufferCompleteCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t buffer_indexes)
-{
-    if (hfdcan == nullptr) {
-        return;
-    }
-    dispatchCompletedTransfers(hfdcan, buffer_indexes);
-}
-
-void FdcanBus::txBufferAbortCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t buffer_indexes)
-{
-    if (hfdcan == nullptr) {
-        return;
-    }
-
-    CallbackState *state = findCallbackState(hfdcan);
-    if (state == nullptr) {
-        return;
-    }
-
-    uint32_t remaining_indexes = buffer_indexes;
-    while (remaining_indexes != 0U) {
-        const uint32_t buffer_index = remaining_indexes & (~remaining_indexes + 1U);
-        remaining_indexes &= ~buffer_index;
-        state->tx_transfers.erase(buffer_index);
+    FdcanBus* bus = find(hfdcan);
+    if (bus != nullptr) {
+        bus->dispatchReceive(FDCAN_RX_FIFO1);
     }
 }
 
-void FdcanBus::rxBufferNewMessageCallback(FDCAN_HandleTypeDef *hfdcan)
+void FdcanBus::txFifoEmptyCallback(FDCAN_HandleTypeDef* hfdcan)
 {
     (void)hfdcan;
 }
 
-void FdcanBus::highPriorityMessageCallback(FDCAN_HandleTypeDef *hfdcan)
+void FdcanBus::txBufferCompleteCallback(FDCAN_HandleTypeDef* hfdcan, uint32_t buffer_indexes)
+{
+    FdcanBus* bus = find(hfdcan);
+    if (bus != nullptr && bus->tx_active_ &&
+        (buffer_indexes & bus->active_tx_.tx_buffer_index) != 0U) {
+        bus->completeTransmit(HAL_OK, true, true);
+    }
+}
+
+void FdcanBus::txBufferAbortCallback(FDCAN_HandleTypeDef* hfdcan, uint32_t buffer_indexes)
+{
+    FdcanBus* bus = find(hfdcan);
+    if (bus != nullptr && bus->tx_active_ &&
+        (buffer_indexes & bus->active_tx_.tx_buffer_index) != 0U) {
+        bus->completeTransmit(HAL_ERROR, true, true);
+    }
+}
+
+void FdcanBus::rxBufferNewMessageCallback(FDCAN_HandleTypeDef* hfdcan)
 {
     (void)hfdcan;
 }
 
-void FdcanBus::timestampWraparoundCallback(FDCAN_HandleTypeDef *hfdcan)
+void FdcanBus::highPriorityMessageCallback(FDCAN_HandleTypeDef* hfdcan)
 {
     (void)hfdcan;
 }
 
-void FdcanBus::timeoutOccurredCallback(FDCAN_HandleTypeDef *hfdcan)
+void FdcanBus::timestampWraparoundCallback(FDCAN_HandleTypeDef* hfdcan)
 {
     (void)hfdcan;
 }
 
-void FdcanBus::errorCallback(FDCAN_HandleTypeDef *hfdcan)
+void FdcanBus::timeoutOccurredCallback(FDCAN_HandleTypeDef* hfdcan)
 {
-    (void)hfdcan;
+    FdcanBus* bus = find(hfdcan);
+    if (bus != nullptr) {
+        bus->completeTransmit(HAL_ERROR, true, true);
+    }
 }
 
-void FdcanBus::errorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t error_status_its)
+void FdcanBus::errorCallback(FDCAN_HandleTypeDef* hfdcan)
 {
-    (void)hfdcan;
+    FdcanBus* bus = find(hfdcan);
+    if (bus != nullptr) {
+        bus->completeTransmit(HAL_ERROR, true, true);
+    }
+}
+
+void FdcanBus::errorStatusCallback(FDCAN_HandleTypeDef* hfdcan, uint32_t error_status_its)
+{
     (void)error_status_its;
+    FdcanBus* bus = find(hfdcan);
+    if (bus != nullptr) {
+        bus->completeTransmit(HAL_ERROR, true, true);
+    }
 }
 
-void FdcanBus::ttScheduleSyncCallback(FDCAN_HandleTypeDef *hfdcan,
-                                       uint32_t tt_sched_sync_its)
+void FdcanBus::ttScheduleSyncCallback(FDCAN_HandleTypeDef* hfdcan,
+                                      uint32_t tt_sched_sync_its)
 {
     (void)hfdcan;
     (void)tt_sched_sync_its;
 }
 
-void FdcanBus::ttTimeMarkCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t tt_time_mark_its)
+void FdcanBus::ttTimeMarkCallback(FDCAN_HandleTypeDef* hfdcan, uint32_t tt_time_mark_its)
 {
     (void)hfdcan;
     (void)tt_time_mark_its;
 }
 
-void FdcanBus::ttStopWatchCallback(FDCAN_HandleTypeDef *hfdcan,
-                                    uint32_t sw_time,
-                                    uint32_t sw_cycle_count)
+void FdcanBus::ttStopWatchCallback(FDCAN_HandleTypeDef* hfdcan,
+                                   uint32_t sw_time,
+                                   uint32_t sw_cycle_count)
 {
     (void)hfdcan;
     (void)sw_time;
     (void)sw_cycle_count;
 }
 
-void FdcanBus::ttGlobalTimeCallback(FDCAN_HandleTypeDef *hfdcan,
-                                     uint32_t tt_global_time_its)
+void FdcanBus::ttGlobalTimeCallback(FDCAN_HandleTypeDef* hfdcan,
+                                    uint32_t tt_global_time_its)
 {
     (void)hfdcan;
     (void)tt_global_time_its;

@@ -35,7 +35,7 @@ HAL_StatusTypeDef init()
     bmi088_accel_cs.write(GPIO_PIN_SET);
     bmi088_gyro_cs.write(GPIO_PIN_SET);
 
-    if (!spi2.init() || !spi6.init()) {
+    if (!spi2.init() || !spi6.init() || !uart2.init() || !uart3.init()) {
         return HAL_ERROR;
     }
 

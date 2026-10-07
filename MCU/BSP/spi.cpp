@@ -1,7 +1,5 @@
 #include "spi.hpp"
 
-#include "FreeRTOS.h"
-#include "queue.h"
 #include "task.h"
 
 namespace bsp {
@@ -11,19 +9,17 @@ SpiBus::SpiBus(SPI_HandleTypeDef& handle, uint32_t queue_length)
 {
     if (queue_length != 0U) {
         queue_ = xQueueCreate(static_cast<UBaseType_t>(queue_length),
-                              sizeof(QueuedTransfer));
+                              sizeof(SpiTransferEvent));
     }
 
-    if (handle_ != nullptr && queue_ != nullptr) {
+    if (queue_ != nullptr) {
         instances()[handle_] = this;
     }
 }
 
 SpiBus::~SpiBus()
 {
-    if (handle_ != nullptr) {
-        instances().erase(handle_);
-    }
+    instances().erase(handle_);
     if (queue_ != nullptr) {
         vQueueDelete(queue_);
         queue_ = nullptr;
@@ -38,13 +34,8 @@ std::unordered_map<SPI_HandleTypeDef*, SpiBus*>& SpiBus::instances()
 
 SpiBus* SpiBus::find(SPI_HandleTypeDef* hspi)
 {
-    if (hspi == nullptr) {
-        return nullptr;
-    }
-
-    auto& instance_map = instances();
-    const auto it = instance_map.find(hspi);
-    return it == instance_map.end() ? nullptr : it->second;
+    const auto it = instances().find(hspi);
+    return it == instances().end() ? nullptr : it->second;
 }
 
 bool SpiBus::inIsr() const
@@ -52,79 +43,104 @@ bool SpiBus::inIsr() const
     return __get_IPSR() != 0U;
 }
 
-bool SpiBus::transferValid(const SPITransfer& transfer) const
+bool SpiBus::transferValid(const SpiTransferEvent& event) const
 {
-    return transfer.size != 0U && (transfer.tx_data != nullptr || transfer.rx_data != nullptr);
+    return event.size != 0U && (event.tx_data != nullptr || event.rx_data != nullptr);
 }
 
-HAL_StatusTypeDef SpiBus::startHalTransfer(SPITransfer& transfer, TransferMode mode) const
+HAL_StatusTypeDef SpiBus::applyHardwareParams(const SpiTransferEvent& event) const
 {
-    const auto* tx_data = static_cast<const uint8_t*>(transfer.tx_data);
-    auto* rx_data = static_cast<uint8_t*>(transfer.rx_data);
+    const SpiHardwareParams& hardware = event.hardware;
+    if (hardware.data_size == 0U && hardware.clk_polarity == 0U &&
+        hardware.clk_phase == 0U && hardware.first_bit == 0U) {
+        return HAL_OK;
+    }
+
+    if (hardware.data_size != 0U) {
+        handle_->Init.DataSize = hardware.data_size;
+    }
+    if (hardware.clk_polarity != 0U) {
+        handle_->Init.CLKPolarity = hardware.clk_polarity;
+    }
+    if (hardware.clk_phase != 0U) {
+        handle_->Init.CLKPhase = hardware.clk_phase;
+    }
+    if (hardware.first_bit != 0U) {
+        handle_->Init.FirstBit = hardware.first_bit;
+    }
+
+    return HAL_SPI_Init(handle_);
+}
+
+HAL_StatusTypeDef SpiBus::startHalTransfer(SpiTransferEvent& event) const
+{
+    const auto* tx_data = static_cast<const uint8_t*>(event.tx_data);
+    auto* rx_data = static_cast<uint8_t*>(event.rx_data);
 
     if (tx_data != nullptr && rx_data != nullptr) {
-        return mode == TransferMode::Dma
-                   ? HAL_SPI_TransmitReceive_DMA(handle_, tx_data, rx_data, transfer.size)
-                   : HAL_SPI_TransmitReceive_IT(handle_, tx_data, rx_data, transfer.size);
+        event.type = SpiTransferType::TransmitReceive;
+        return event.mode == SpiTransferMode::Dma
+                   ? HAL_SPI_TransmitReceive_DMA(handle_, tx_data, rx_data, event.size)
+                   : HAL_SPI_TransmitReceive_IT(handle_, tx_data, rx_data, event.size);
     }
     if (tx_data != nullptr) {
-        return mode == TransferMode::Dma
-                   ? HAL_SPI_Transmit_DMA(handle_, tx_data, transfer.size)
-                   : HAL_SPI_Transmit_IT(handle_, tx_data, transfer.size);
-    }
-    if (rx_data != nullptr) {
-        return mode == TransferMode::Dma
-                   ? HAL_SPI_Receive_DMA(handle_, rx_data, transfer.size)
-                   : HAL_SPI_Receive_IT(handle_, rx_data, transfer.size);
+        event.type = SpiTransferType::Transmit;
+        return event.mode == SpiTransferMode::Dma
+                   ? HAL_SPI_Transmit_DMA(handle_, tx_data, event.size)
+                   : HAL_SPI_Transmit_IT(handle_, tx_data, event.size);
     }
 
-    return HAL_ERROR;
+    event.type = SpiTransferType::Receive;
+    return event.mode == SpiTransferMode::Dma
+               ? HAL_SPI_Receive_DMA(handle_, rx_data, event.size)
+               : HAL_SPI_Receive_IT(handle_, rx_data, event.size);
 }
 
-SPITransfer* SpiBus::clearActiveTransfer(bool from_isr)
+bool SpiBus::enqueueTransfer(SpiTransferEvent& event)
 {
-    SPITransfer* transfer = nullptr;
-    if (from_isr) {
-        const UBaseType_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
-        transfer = active_transfer_;
-        active_transfer_ = nullptr;
-        portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
-    } else {
-        taskENTER_CRITICAL();
-        transfer = active_transfer_;
-        active_transfer_ = nullptr;
-        taskEXIT_CRITICAL();
+    if (!valid() || !transferValid(event)) {
+        return false;
     }
 
-    return transfer;
+    event.handle = handle_;
+    event.status = HAL_OK;
+    event.error_code = HAL_SPI_ERROR_NONE;
+
+    if (inIsr()) {
+        BaseType_t higher_priority_task_woken = pdFALSE;
+        if (xQueueSendFromISR(queue_, &event, &higher_priority_task_woken) != pdPASS) {
+            return false;
+        }
+        (void)startNextTransfer(true, &higher_priority_task_woken);
+        portYIELD_FROM_ISR(higher_priority_task_woken);
+        return true;
+    }
+
+    if (xQueueSend(queue_, &event, 0U) != pdPASS) {
+        return false;
+    }
+
+    (void)startNextTransfer(false);
+    return true;
 }
 
-bool SpiBus::takeNextTransfer(bool from_isr,
-                              QueuedTransfer& queued,
-                              BaseType_t* higher_priority_task_woken)
+bool SpiBus::takeNextTransfer(bool from_isr, BaseType_t* higher_priority_task_woken)
 {
-    if (queue_ == nullptr) {
+    if (active_) {
         return false;
     }
 
     bool has_transfer = false;
     if (from_isr) {
         const UBaseType_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
-        if (active_transfer_ == nullptr &&
-            xQueueReceiveFromISR(queue_, &queued, higher_priority_task_woken) == pdPASS) {
-            active_transfer_ = queued.transfer;
-            active_mode_ = queued.mode;
-            has_transfer = true;
-        }
+        has_transfer =
+            xQueueReceiveFromISR(queue_, &active_event_, higher_priority_task_woken) == pdPASS;
+        active_ = has_transfer;
         portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
     } else {
         taskENTER_CRITICAL();
-        if (active_transfer_ == nullptr &&
-            xQueueReceive(queue_, &queued, 0U) == pdPASS) {
-            active_transfer_ = queued.transfer;
-            active_mode_ = queued.mode;
-            has_transfer = true;
-        }
+        has_transfer = xQueueReceive(queue_, &active_event_, 0U) == pdPASS;
+        active_ = has_transfer;
         taskEXIT_CRITICAL();
     }
 
@@ -133,25 +149,25 @@ bool SpiBus::takeNextTransfer(bool from_isr,
 
 bool SpiBus::startNextTransfer(bool from_isr, BaseType_t* higher_priority_task_woken)
 {
-    QueuedTransfer queued;
-    if (!takeNextTransfer(from_isr, queued, higher_priority_task_woken)) {
+    if (!takeNextTransfer(from_isr, higher_priority_task_woken)) {
         return false;
     }
 
-    SPITransfer* transfer = queued.transfer;
-    if (transfer == nullptr || !transferValid(*transfer)) {
+    if (!transferValid(active_event_)) {
         completeTransfer(HAL_ERROR, from_isr, true);
         return false;
     }
 
-    transfer->status = HAL_BUSY;
-    transfer->error_code = HAL_SPI_ERROR_NONE;
-
-    if (transfer->pre_transmit_cb) {
-        transfer->pre_transmit_cb(transfer);
+    active_event_.status = HAL_BUSY;
+    active_event_.error_code = HAL_SPI_ERROR_NONE;
+    if (active_event_.before_cb != nullptr) {
+        active_event_.before_cb(active_event_);
     }
 
-    const HAL_StatusTypeDef status = startHalTransfer(*transfer, queued.mode);
+    HAL_StatusTypeDef status = applyHardwareParams(active_event_);
+    if (status == HAL_OK) {
+        status = startHalTransfer(active_event_);
+    }
     if (status != HAL_OK) {
         completeTransfer(status, from_isr, true);
         return false;
@@ -160,14 +176,28 @@ bool SpiBus::startNextTransfer(bool from_isr, BaseType_t* higher_priority_task_w
     return true;
 }
 
+void SpiBus::clearActiveTransfer(bool from_isr)
+{
+    if (from_isr) {
+        const UBaseType_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
+        active_ = false;
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
+    } else {
+        taskENTER_CRITICAL();
+        active_ = false;
+        taskEXIT_CRITICAL();
+    }
+}
+
 void SpiBus::completeTransfer(HAL_StatusTypeDef status, bool from_isr, bool start_next)
 {
-    SPITransfer* transfer = clearActiveTransfer(from_isr);
-    if (transfer != nullptr) {
-        transfer->status = status;
-        transfer->error_code = HAL_SPI_GetError(handle_);
-        if (transfer->transmited_cb) {
-            transfer->transmited_cb(transfer);
+    if (active_) {
+        active_event_.status = status;
+        active_event_.error_code = HAL_SPI_GetError(handle_);
+        SpiTransferEvent finished_event = active_event_;
+        clearActiveTransfer(from_isr);
+        if (finished_event.after_cb != nullptr) {
+            finished_event.after_cb(finished_event);
         }
     }
 
@@ -181,40 +211,13 @@ void SpiBus::completeTransfer(HAL_StatusTypeDef status, bool from_isr, bool star
     }
 }
 
-bool SpiBus::enqueueTransfer(SPITransfer& transfer, TransferMode mode)
-{
-    if (!valid() || !transferValid(transfer)) {
-        return false;
-    }
-
-    const QueuedTransfer queued{&transfer, mode};
-    if (inIsr()) {
-        BaseType_t higher_priority_task_woken = pdFALSE;
-        if (xQueueSendFromISR(queue_, &queued, &higher_priority_task_woken) != pdPASS) {
-            return false;
-        }
-
-        (void)startNextTransfer(true, &higher_priority_task_woken);
-        portYIELD_FROM_ISR(higher_priority_task_woken);
-        return true;
-    }
-
-    if (xQueueSend(queue_, &queued, 0U) != pdPASS) {
-        return false;
-    }
-
-    (void)startNextTransfer(false);
-    return true;
-}
-
 bool SpiBus::init()
 {
     if (!valid()) {
         return false;
     }
 
-    active_transfer_ = nullptr;
-    active_mode_ = TransferMode::Interrupt;
+    active_ = false;
     xQueueReset(queue_);
 
 #if (USE_HAL_SPI_REGISTER_CALLBACKS == 1U)
@@ -257,26 +260,27 @@ bool SpiBus::init()
         registered = false;
     }
 
-    if (!registered) {
-        instances().erase(handle_);
-        return false;
-    }
-
-    return true;
+    return registered;
 #else
-    instances().erase(handle_);
     return false;
 #endif
 }
 
-bool SpiBus::transferIt(SPITransfer& transfer)
+bool SpiBus::submit(SpiTransferEvent& event)
 {
-    return enqueueTransfer(transfer, TransferMode::Interrupt);
+    return enqueueTransfer(event);
 }
 
-bool SpiBus::transferDma(SPITransfer& transfer)
+bool SpiBus::transferIt(SpiTransferEvent& event)
 {
-    return enqueueTransfer(transfer, TransferMode::Dma);
+    event.mode = SpiTransferMode::Interrupt;
+    return submit(event);
+}
+
+bool SpiBus::transferDma(SpiTransferEvent& event)
+{
+    event.mode = SpiTransferMode::Dma;
+    return submit(event);
 }
 
 bool SpiBus::abort()
@@ -286,19 +290,10 @@ bool SpiBus::abort()
     }
 
     const HAL_StatusTypeDef status = HAL_SPI_Abort(handle_);
-    SPITransfer* transfer = clearActiveTransfer(false);
     if (queue_ != nullptr) {
         xQueueReset(queue_);
     }
-
-    if (transfer != nullptr) {
-        transfer->status = status;
-        transfer->error_code = HAL_SPI_GetError(handle_);
-        if (transfer->transmited_cb) {
-            transfer->transmited_cb(transfer);
-        }
-    }
-
+    completeTransfer(status == HAL_OK ? HAL_ERROR : status, false, false);
     return status == HAL_OK;
 }
 
