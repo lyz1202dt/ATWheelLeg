@@ -38,6 +38,20 @@ SpiBus* SpiBus::find(SPI_HandleTypeDef* hspi)
     return it == instances().end() ? nullptr : it->second;
 }
 
+static SpiTransferStatus toTransferStatus(HAL_StatusTypeDef status)
+{
+    switch (status) {
+    case HAL_OK:
+        return SpiTransferStatus::Ok;
+    case HAL_BUSY:
+        return SpiTransferStatus::Busy;
+    case HAL_TIMEOUT:
+        return SpiTransferStatus::Timeout;
+    default:
+        return SpiTransferStatus::Error;
+    }
+}
+
 bool SpiBus::inIsr() const
 {
     return __get_IPSR() != 0U;
@@ -102,9 +116,7 @@ bool SpiBus::enqueueTransfer(SpiTransferEvent& event)
         return false;
     }
 
-    event.handle = handle_;
-    event.status = HAL_OK;
-    event.error_code = HAL_SPI_ERROR_NONE;
+    event.status = SpiTransferStatus::Ok;
 
     if (inIsr()) {
         BaseType_t higher_priority_task_woken = pdFALSE;
@@ -158,8 +170,7 @@ bool SpiBus::startNextTransfer(bool from_isr, BaseType_t* higher_priority_task_w
         return false;
     }
 
-    active_event_.status = HAL_BUSY;
-    active_event_.error_code = HAL_SPI_ERROR_NONE;
+    active_event_.status = SpiTransferStatus::Busy;
     if (active_event_.before_cb != nullptr) {
         active_event_.before_cb(active_event_);
     }
@@ -192,8 +203,7 @@ void SpiBus::clearActiveTransfer(bool from_isr)
 void SpiBus::completeTransfer(HAL_StatusTypeDef status, bool from_isr, bool start_next)
 {
     if (active_) {
-        active_event_.status = status;
-        active_event_.error_code = HAL_SPI_GetError(handle_);
+        active_event_.status = toTransferStatus(status);
         SpiTransferEvent finished_event = active_event_;
         clearActiveTransfer(from_isr);
         if (finished_event.after_cb != nullptr) {

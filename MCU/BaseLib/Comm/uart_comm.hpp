@@ -37,18 +37,17 @@ private:
     static constexpr std::size_t kCommandOffset = 2U;
     static constexpr std::size_t kPayloadOffset = kFrameHeadSize;
 
-    static void uartEventCallback(bsp::UartTransferEvent& event);
+    static void uartTransmitCallback(bsp::UartTransmitEvent& event);
+    static void uartReceiveCallback(bsp::UartReceiveEvent& event);
     static uint16_t crc16Modbus(const uint8_t* data, std::size_t size);
     static uint16_t readU16Le(const uint8_t* data);
     static uint32_t readU32Le(const uint8_t* data);
     static void writeU16Le(uint8_t* data, uint16_t value);
     static void writeU32Le(uint8_t* data, uint32_t value);
 
-    bool configureReceiveDma() const;
     bool startReceive();
-    void onTransmitComplete(HAL_StatusTypeDef status);
+    void onTransmitComplete();
     void onReceiveEvent(uint16_t position, HAL_StatusTypeDef status);
-    void pushDmaRange(std::size_t begin, std::size_t end);
     void pushRxByte(uint8_t value);
     uint8_t peekRxByte(std::size_t offset) const;
     void dropRxBytes(std::size_t count);
@@ -61,7 +60,6 @@ private:
     uint8_t* rx_dma_buffer_ = rx_dma_buffer_storage_;
     std::size_t rx_dma_buffer_size_ = kRxDmaBufferSize;
     uint8_t rx_ring_buffer_[kRxRingBufferSize] = {};
-    std::size_t rx_dma_last_pos_ = 0U;
     std::size_t rx_ring_head_ = 0U;
     std::size_t rx_ring_tail_ = 0U;
     std::size_t rx_ring_size_ = 0U;

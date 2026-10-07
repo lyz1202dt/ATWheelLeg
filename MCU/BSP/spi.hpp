@@ -20,6 +20,13 @@ enum class SpiTransferType : uint8_t {
     TransmitReceive,
 };
 
+enum class SpiTransferStatus : uint8_t {
+    Ok,
+    Busy,
+    Timeout,
+    Error,
+};
+
 struct SpiHardwareParams {
     uint32_t data_size = 0U;
     uint32_t clk_polarity = 0U;
@@ -30,7 +37,6 @@ struct SpiHardwareParams {
 struct SpiTransferEvent {
     using Callback = void (*)(SpiTransferEvent& event);
 
-    SPI_HandleTypeDef* handle = nullptr;
     SpiTransferMode mode = SpiTransferMode::Interrupt;
     SpiTransferType type = SpiTransferType::TransmitReceive;
     SpiHardwareParams hardware = {};
@@ -38,8 +44,7 @@ struct SpiTransferEvent {
     void* rx_data = nullptr;
     uint16_t size = 0U;
     void* context = nullptr;
-    HAL_StatusTypeDef status = HAL_OK;
-    uint32_t error_code = HAL_SPI_ERROR_NONE;
+    SpiTransferStatus status = SpiTransferStatus::Ok;
     Callback before_cb = nullptr;
     Callback after_cb = nullptr;
 };

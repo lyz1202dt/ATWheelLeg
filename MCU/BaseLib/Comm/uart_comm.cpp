@@ -32,11 +32,18 @@ bool UartComm::set_dma_address(uint8_t* rx_buffer, std::size_t rx_size,
 
 bool UartComm::init()
 {
-    if (port_ == nullptr || !port_->valid() || !configureReceiveDma()) {
+    if (port_ == nullptr || !port_->valid() || port_->native()->hdmarx == nullptr) {
         return false;
     }
 
-    rx_dma_last_pos_ = 0U;
+    DMA_HandleTypeDef* rx_dma = port_->native()->hdmarx;
+    if (rx_dma->Init.Mode != DMA_NORMAL) {
+        rx_dma->Init.Mode = DMA_NORMAL;
+        if (HAL_DMA_Init(rx_dma) != HAL_OK) {
+            return false;
+        }
+    }
+
     rx_ring_head_ = 0U;
     rx_ring_tail_ = 0U;
     rx_ring_size_ = 0U;
@@ -73,7 +80,7 @@ bool UartComm::send_pack(void* data, int size)
     const uint16_t frame_size =
         static_cast<uint16_t>(kFrameHeadSize + payload_size + kFrameCrcSize);
     if (frame_size > send_buffer_size_) {
-        onTransmitComplete(HAL_ERROR);
+        onTransmitComplete();
         return false;
     }
 
@@ -87,53 +94,50 @@ bool UartComm::send_pack(void* data, int size)
     const uint16_t crc = crc16Modbus(send_buffer_, frame_size - kFrameCrcSize);
     writeU16Le(&send_buffer_[frame_size - kFrameCrcSize], crc);
 
-    const HAL_StatusTypeDef status =
-        port_->transmitDma(send_buffer_, frame_size, &UartComm::uartEventCallback, this);
+    bsp::UartTransmitEvent event = {};
+    event.mode = bsp::UartTransmitMode::Dma;
+    event.data = send_buffer_;
+    event.size = frame_size;
+    event.context = this;
+    event.after_cb = &UartComm::uartTransmitCallback;
+
+    const HAL_StatusTypeDef status = port_->transmit(event);
     if (status != HAL_OK) {
-        onTransmitComplete(status);
+        onTransmitComplete();
         return false;
     }
 
     return true;
 }
 
-void UartComm::uartEventCallback(bsp::UartTransferEvent& event)
+void UartComm::uartTransmitCallback(bsp::UartTransmitEvent& event)
 {
     auto* comm = static_cast<UartComm*>(event.context);
-    if (event.direction == bsp::UartTransferDirection::Transmit) {
-        comm->onTransmitComplete(event.status);
-    } else {
+    if (comm != nullptr) {
+        comm->onTransmitComplete();
+    }
+}
+
+void UartComm::uartReceiveCallback(bsp::UartReceiveEvent& event)
+{
+    auto* comm = static_cast<UartComm*>(event.context);
+    if (comm != nullptr) {
         comm->onReceiveEvent(event.transferred_size, event.status);
     }
 }
 
-bool UartComm::configureReceiveDma() const
-{
-    UART_HandleTypeDef* handle = port_->native();
-    if (handle->hdmarx == nullptr) {
-        return false;
-    }
-
-    if (handle->hdmarx->Init.Mode == DMA_CIRCULAR) {
-        return true;
-    }
-
-    handle->hdmarx->Init.Mode = DMA_CIRCULAR;
-    return HAL_DMA_Init(handle->hdmarx) == HAL_OK;
-}
-
 bool UartComm::startReceive()
 {
-    const HAL_StatusTypeDef status =
-        port_->receiveToIdleDma(rx_dma_buffer_,
-                                static_cast<uint16_t>(rx_dma_buffer_size_),
-                                &UartComm::uartEventCallback,
-                                this,
-                                true);
-    return status == HAL_OK;
+    bsp::UartReceiveEvent event = {};
+    event.mode = bsp::UartReceiveMode::ToIdleDma;
+    event.data = rx_dma_buffer_;
+    event.size = static_cast<uint16_t>(rx_dma_buffer_size_);
+    event.context = this;
+    event.after_cb = &UartComm::uartReceiveCallback;
+    return port_->receive(event) == HAL_OK;
 }
 
-void UartComm::onTransmitComplete(HAL_StatusTypeDef)
+void UartComm::onTransmitComplete()
 {
     __disable_irq();
     transmit_busy_ = false;
@@ -152,22 +156,12 @@ void UartComm::onReceiveEvent(uint16_t position, HAL_StatusTypeDef status)
         current_pos = rx_dma_buffer_size_;
     }
 
-    if (current_pos > rx_dma_last_pos_) {
-        pushDmaRange(rx_dma_last_pos_, current_pos);
-    } else if (current_pos < rx_dma_last_pos_) {
-        pushDmaRange(rx_dma_last_pos_, rx_dma_buffer_size_);
-        pushDmaRange(0U, current_pos);
-    }
-
-    rx_dma_last_pos_ = current_pos;
-    parseRxRing();
-}
-
-void UartComm::pushDmaRange(std::size_t begin, std::size_t end)
-{
-    for (std::size_t i = begin; i < end; ++i) {
+    for (std::size_t i = 0U; i < current_pos; ++i) {
         pushRxByte(rx_dma_buffer_[i]);
     }
+
+    (void)startReceive();
+    parseRxRing();
 }
 
 void UartComm::pushRxByte(uint8_t value)

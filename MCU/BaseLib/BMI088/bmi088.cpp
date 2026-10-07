@@ -531,7 +531,20 @@ HAL_StatusTypeDef Bmi088::transfer(Device device, const uint8_t *tx_data,
     };
     transfer.after_cb = [](bsp::SpiTransferEvent &event) {
         auto *ctx = static_cast<BlockingContext *>(event.context);
-        ctx->status = event.status;
+        switch (event.status) {
+        case bsp::SpiTransferStatus::Ok:
+            ctx->status = HAL_OK;
+            break;
+        case bsp::SpiTransferStatus::Busy:
+            ctx->status = HAL_BUSY;
+            break;
+        case bsp::SpiTransferStatus::Timeout:
+            ctx->status = HAL_TIMEOUT;
+            break;
+        default:
+            ctx->status = HAL_ERROR;
+            break;
+        }
         ctx->owner->deselect(ctx->device);
         ctx->done = true;
     };

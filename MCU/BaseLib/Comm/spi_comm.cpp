@@ -105,7 +105,8 @@ void SpiComm::spiEventCallback(bsp::SpiTransferEvent& event)
 
 void SpiComm::onTransferComplete(bsp::SpiTransferEvent& event)
 {
-    const bool should_dispatch_rx = receive_on_complete_ && event.status == HAL_OK && recv_callback_;
+    const bool should_dispatch_rx =
+        receive_on_complete_ && event.status == bsp::SpiTransferStatus::Ok && recv_callback_;
 
     if (user_after_cb_ != nullptr) {
         bsp::SpiTransferEvent user_event = event;
