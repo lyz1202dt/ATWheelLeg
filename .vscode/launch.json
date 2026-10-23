@@ -14,6 +14,10 @@
             "configFiles": ["${workspaceFolder}/MCU/openocd.cfg"],
             "searchDir": ["${workspaceFolder}/MCU"],
             "runToEntryPoint": "main",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 5
+            },
             "showDevDebugOutput": "raw"
         },
         {
@@ -21,6 +25,10 @@
             "cwd": "${workspaceFolder}/MCU",
             "executable": "${workspaceFolder}/MCU/build/Debug/wheel_leg.elf",
             "request": "attach",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 5
+            },
             "type": "cortex-debug",
             "gdbPath": "/usr/bin/gdb-multiarch",
             "objdumpPath": "/usr/bin/arm-none-eabi-objdump",
