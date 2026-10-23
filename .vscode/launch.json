@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "OpenOCD Debug (MCU)",
+            "cwd": "${workspaceFolder}/MCU",
+            "executable": "${workspaceFolder}/MCU/build/Debug/wheel_leg.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "gdbPath": "/usr/bin/gdb-multiarch",
+            "objdumpPath": "/usr/bin/arm-none-eabi-objdump",
+            "preLaunchTask": "MCU: Build Debug",
+            "servertype": "openocd",
+            "configFiles": ["${workspaceFolder}/MCU/openocd.cfg"],
+            "searchDir": ["${workspaceFolder}/MCU"],
+            "runToEntryPoint": "main",
+            "showDevDebugOutput": "raw"
+        },
+        {
+            "name": "OpenOCD Attach (MCU)",
+            "cwd": "${workspaceFolder}/MCU",
+            "executable": "${workspaceFolder}/MCU/build/Debug/wheel_leg.elf",
+            "request": "attach",
+            "type": "cortex-debug",
+            "gdbPath": "/usr/bin/gdb-multiarch",
+            "objdumpPath": "/usr/bin/arm-none-eabi-objdump",
+            "servertype": "openocd",
+            "configFiles": ["${workspaceFolder}/MCU/openocd.cfg"],
+            "searchDir": ["${workspaceFolder}/MCU"],
+            "showDevDebugOutput": "raw"
+        }
+    ]
+}

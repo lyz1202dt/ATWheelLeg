@@ -198,6 +198,30 @@ cmake --build --preset Release
 
 构建目录为 `MCU/build/Debug` 或 `MCU/build/Release`，目标程序名为 `wheel_leg`，通常可在对应目录中找到 `.elf` 和 `.map` 文件。
 
+### OpenOCD 调试 MCU
+
+参考 FOC 工程，使用 J-Link、SWD 和 `MCU/openocd.cfg`，目标脚本为
+`target/stm32h7x.cfg`（STM32H723）。连接 SWDIO、SWCLK、GND 和目标电压参考。
+配置使用 `reset_config none`，不依赖 NRST 连线。
+
+安装 VS Code 的 Cortex-Debug 扩展，以及 `openocd`、`gdb-multiarch` 和
+`arm-none-eabi-objdump`。用 VS Code 打开本仓库根目录，选择：
+
+- `OpenOCD Debug (MCU)`：自动配置并构建 Debug 固件，下载到 MCU，运行至 `main`。
+- `OpenOCD Attach (MCU)`：使用现有 Debug ELF 的符号附加调试，不下载固件；ELF 需与板上固件一致。
+
+也可从仓库根目录启动 GDB Server：
+
+```bash
+openocd -f MCU/openocd.cfg
+```
+
+默认 GDB 端口为 `3333`。多探针或需调整速率时，可在加载配置前设置参数：
+
+```bash
+openocd -c 'set PROBE_SERIAL YOUR_JLINK_SERIAL; set ADAPTER_SPEED 1000' -f MCU/openocd.cfg
+```
+
 ### 构建 ROS 2 仿真工作空间
 
 从项目根目录执行：

@@ -112,25 +112,25 @@ void app_main(void) {
     bmi088_imu.init();
 
     //创建控制器
-    (void)update_lqr_gain();
-    lqr_controller = new Controller(
-        imu,
-        lf_motor,
-        rf_motor,
-        lb_motor,
-        rb_motor,
-        lw_motor,
-        rw_motor,
-        provide_lqr_gain);
-    controller=lqr_controller;
+    // (void)update_lqr_gain();
+    // lqr_controller = new Controller(
+    //     imu,
+    //     lf_motor,
+    //     rf_motor,
+    //     lb_motor,
+    //     rb_motor,
+    //     lw_motor,
+    //     rw_motor,
+    //     provide_lqr_gain);
+    // controller=lqr_controller;
 
     //创建任务
     xTaskCreate(IMUTask, "imu_task", 1024, nullptr, 4, &imu_task_handle);
-    xTaskCreate(LqrTask, "lqr_task", 4096, nullptr, 1, &lqr_task_handle);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    xTaskCreate(MotorTask, "motor_task", 512, nullptr, 4, &motor_task_handle);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    xTaskCreate(ControlTask, "control_task", 1024, nullptr, 3, &control_task_handle);
+    // xTaskCreate(LqrTask, "lqr_task", 4096, nullptr, 1, &lqr_task_handle);
+    // vTaskDelay(pdMS_TO_TICKS(500));
+    // xTaskCreate(MotorTask, "motor_task", 512, nullptr, 4, &motor_task_handle);
+    // vTaskDelay(pdMS_TO_TICKS(200));
+    // xTaskCreate(ControlTask, "control_task", 1024, nullptr, 3, &control_task_handle);
     xTaskCreate(TestTask, "test_task", 512, nullptr, 1, &test_task_handle);
 
     for (;;) {

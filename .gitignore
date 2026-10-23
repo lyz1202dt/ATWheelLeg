@@ -1,4 +1,6 @@
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 .cache/
 MCU/build/
 Core/build/
